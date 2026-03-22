@@ -1,0 +1,547 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using ExileCore.Shared.Enums;
+using ImGuiNET;
+using SharpDX;
+using Vector2 = System.Numerics.Vector2;
+
+namespace MapDropStatistics;
+
+public partial class MapDropStatistics
+{
+    private List<DisplayLine> BuildLines()
+    {
+        UpdateLiveTimers();
+
+        Color textColor = Settings.Display.Visuals.TextColor;
+        Color uniqueValueColor = Settings.Display.Visuals.UniqueValueColor;
+        Color currencyValueColor = Settings.Display.Visuals.CurrencyValueColor;
+        Color failColor = Settings.Tracking.CountFailMapToStatistic
+            ? new Color(220, 70, 70, 255)
+            : textColor;
+        var customTrackedItems = GetConfiguredCustomTrackedItems();
+
+        var lines = new List<DisplayLine>();
+
+        if (Settings.Display.Visibility.ShowHeader)
+            lines.Add(new(new DisplaySegment("Map Drop Statistics", Settings.Display.Visuals.HeaderColor)));
+
+        if (Settings.Display.Visibility.ShowArea)
+            lines.Add(new(new DisplaySegment($"Area: {FormatAreaStatusText()}", textColor)));
+
+        if (Settings.Display.Visibility.ShowMapsAndFails)
+        {
+            lines.Add(new(
+                new DisplaySegment($"Maps: {_sessionStats.AreasTracked}", textColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment("Fails: ", failColor),
+                new DisplaySegment(_sessionStats.FailedAreas.ToString(CultureInfo.InvariantCulture), failColor)));
+
+            if (_pendingAreaReviews.Count > 0)
+                lines.Add(new(new DisplaySegment($"Pending avg: {_pendingAreaReviews.Count} ({_pendingAreaReviews.Peek().AreaName})", textColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowMapTime)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("Map time: ", textColor),
+                new DisplaySegment(FormatDuration(_currentAreaStats.Elapsed), currencyValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatDuration(_sessionStats.AverageMapTime), currencyValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowHoTime)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("HO time: ", textColor),
+                new DisplaySegment(FormatDuration(_sessionStats.CurrentNonMapElapsed), currencyValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatDuration(_sessionStats.TotalNonMapTime), currencyValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowUniqueItems)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("Unique: ", textColor),
+                new DisplaySegment(_currentAreaStats.UniqueItems.ToString(CultureInfo.InvariantCulture), uniqueValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatAverage(_sessionStats.AverageUniqueItems), uniqueValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowT0Uniques)
+        {
+            var lastT0Name = GetDisplayableT0Name();
+            lines.Add(new(true,
+                new DisplaySegment($"T0 {lastT0Name}: ", textColor),
+                new DisplaySegment(_currentAreaStats.T0UniqueItems.ToString(CultureInfo.InvariantCulture), uniqueValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatAverage(_sessionStats.AverageT0UniqueItems), uniqueValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowCurrencyQuantity)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("Curr: ", textColor),
+                new DisplaySegment(_currentAreaStats.CurrencyQuantity.ToString(CultureInfo.InvariantCulture), textColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatAverage(_sessionStats.AverageCurrencyQuantity), textColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowDivineOrbs)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("Divine Orbs: ", textColor),
+                new DisplaySegment(_currentAreaStats.DivineOrbQuantity.ToString(CultureInfo.InvariantCulture), currencyValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatAverage(_sessionStats.AverageDivineOrbQuantity), currencyValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowValdosBox)
+        {
+            lines.Add(new(true,
+                new DisplaySegment("Valdo's Box: ", textColor),
+                new DisplaySegment(_currentAreaStats.ValdosPuzzleBoxQuantity.ToString(CultureInfo.InvariantCulture), currencyValueColor),
+                new DisplaySegment(" | ", textColor),
+                new DisplaySegment(FormatAverage(_sessionStats.AverageValdosPuzzleBoxQuantity), currencyValueColor)));
+        }
+
+        if (Settings.Display.Visibility.ShowCustomTrackedItems)
+        {
+            foreach (var itemName in customTrackedItems)
+            {
+                lines.Add(new(true,
+                    new DisplaySegment($"{TruncateDisplayName(itemName)}: ", textColor),
+                    new DisplaySegment(GetCurrentTrackedItemCount(itemName).ToString(CultureInfo.InvariantCulture), currencyValueColor),
+                    new DisplaySegment(" | ", textColor),
+                    new DisplaySegment(FormatAverage(_sessionStats.GetAverageCustomTrackedDrop(itemName)), currencyValueColor)));
+            }
+        }
+
+        if (Settings.Debug.EnableOverlay)
+        {
+            lines.Add(new(new DisplaySegment($"Dbg EA/PR: {_entityAddedAttempts}/{_pendingRetryAttempts}", textColor)));
+            lines.Add(new(new DisplaySegment($"Dbg PendingNow: {_pendingDropKeys.Count}", textColor)));
+        }
+
+        return lines;
+    }
+
+    private void ResetDebugCounters()
+    {
+        _entityAddedAttempts = 0;
+        _pendingRetryAttempts = 0;
+    }
+
+    private void DrawSavedMapStatsViewer()
+    {
+        ImGui.Separator();
+        if (!ImGui.CollapsingHeader("Saved MapStats Viewer", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+
+        var saveMapStats = Settings.Actions.SaveMapStats.Value;
+        if (ImGui.Checkbox("Save map stats", ref saveMapStats))
+            Settings.Actions.SaveMapStats.Value = saveMapStats;
+
+        ImGui.SameLine();
+        ImGui.TextDisabled("|");
+        ImGui.SameLine();
+
+        var maxSavedMapStats = Settings.Actions.MaxSavedMapStats.Value;
+        ImGui.SetNextItemWidth(140);
+        if (ImGui.SliderInt("Max saved map stats", ref maxSavedMapStats, 1, 500))
+        {
+            Settings.Actions.MaxSavedMapStats.Value = maxSavedMapStats;
+            PruneSavedMapStats();
+            RefreshSavedMapStats();
+        }
+
+        if (ImGui.Button("Refresh Saved MapStats"))
+            RefreshSavedMapStats();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Clear Saved MapStats"))
+            ClearSavedMapStats();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Reset all statistics"))
+            ResetSessionStats();
+
+        ImGui.SameLine();
+        ImGui.Text($"Saved: {_savedMapStatFiles.Count}");
+
+        var hasPendingMap = _pendingAreaReviews.Count > 0;
+        var pendingMapLabel = hasPendingMap
+            ? $"Pending avg: {_pendingAreaReviews.Count} ({_pendingAreaReviews.Peek().AreaName})"
+            : "Pending avg: 0";
+        ImGui.TextUnformatted(pendingMapLabel);
+        if (ImGui.Button("Add pending map to avg"))
+            AddOldestPendingMapToAverage();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Skip pending map"))
+            SkipOldestPendingMap();
+
+        ImGui.SameLine();
+        if (!hasPendingMap)
+            ImGui.TextDisabled("No pending map");
+
+        ImGui.PushItemWidth(260);
+        ImGui.InputTextWithHint("##savedMapStatsFilter", "Filter by filename or area", ref _savedMapStatsFilter, 200);
+        ImGui.PopItemWidth();
+
+        if (ImGui.BeginTable("SavedMapStatsViewer", 2, ImGuiTableFlags.Borders | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp, new Vector2(0, 360)))
+        {
+            ImGui.TableSetupColumn("Files", ImGuiTableColumnFlags.WidthStretch, 0.42f);
+            ImGui.TableSetupColumn("Details", ImGuiTableColumnFlags.WidthStretch, 0.58f);
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            DrawSavedMapStatsFileList();
+
+            ImGui.TableSetColumnIndex(1);
+            DrawSavedMapStatsDetails();
+
+            ImGui.EndTable();
+        }
+    }
+
+    private void DrawSavedMapStatsFileList()
+    {
+        var opened = ImGui.BeginChild("SavedMapStatsFiles");
+        if (!opened)
+        {
+            ImGui.EndChild();
+            return;
+        }
+
+        var filter = _savedMapStatsFilter?.Trim() ?? string.Empty;
+        foreach (var filePath in _savedMapStatFiles)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+            if (!string.IsNullOrWhiteSpace(filter) &&
+                fileName.Contains(filter, StringComparison.InvariantCultureIgnoreCase) == false)
+            {
+                if (!SavedMapStatMatchesAreaFilter(filePath, filter))
+                    continue;
+            }
+
+            var isSelected = string.Equals(_selectedSavedMapStatPath, filePath, StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable($"{fileName}##{filePath}", isSelected))
+                LoadSavedMapStat(filePath);
+        }
+
+        ImGui.EndChild();
+    }
+
+    private void DrawSavedMapStatsDetails()
+    {
+        var opened = ImGui.BeginChild("SavedMapStatsDetails");
+        if (!opened)
+        {
+            ImGui.EndChild();
+            return;
+        }
+
+        if (_selectedAreaDump == null)
+        {
+            ImGui.TextDisabled("Select a saved map stat on the left.");
+            ImGui.EndChild();
+            return;
+        }
+
+        ImGui.Text($"Area: {_selectedAreaDump.AreaName}");
+        ImGui.Text($"Saved: {_selectedAreaDump.SavedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
+        ImGui.Text($"Unique: {_selectedAreaDump.UniqueItems}");
+        ImGui.Text($"T0: {_selectedAreaDump.T0UniqueItems}");
+        ImGui.Text($"Currency qty: {_selectedAreaDump.CurrencyQuantity}");
+        ImGui.Text($"Fragments qty: {_selectedAreaDump.FragmentQuantity}");
+        ImGui.Text($"Bases N/M/R: {_selectedAreaDump.NormalBaseItems}/{_selectedAreaDump.MagicBaseItems}/{_selectedAreaDump.RareBaseItems}");
+        ImGui.Text($"Divine: {_selectedAreaDump.DivineOrbQuantity}");
+        ImGui.Text($"Valdo: {_selectedAreaDump.ValdosPuzzleBoxQuantity}");
+
+        var customTracked = _selectedAreaDump.CustomTracked ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase);
+        if (customTracked.Count > 0)
+        {
+            ImGui.Separator();
+            ImGui.Text("Custom tracked:");
+            foreach (var entry in customTracked.OrderBy(x => x.Key, StringComparer.InvariantCultureIgnoreCase))
+                ImGui.Text($"{entry.Key}: {entry.Value}");
+        }
+
+        ImGui.Separator();
+        ImGui.Text("Drops:");
+        if (ImGui.BeginTable("SavedMapStatsDrops", 2, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+        {
+            ImGui.TableSetupColumn("Drop");
+            ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 80);
+            ImGui.TableHeadersRow();
+
+            foreach (var entry in (_selectedAreaDump.Drops ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase))
+                         .OrderByDescending(x => x.Value)
+                         .ThenBy(x => x.Key, StringComparer.InvariantCultureIgnoreCase))
+            {
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(entry.Key);
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(entry.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            ImGui.EndTable();
+        }
+
+        ImGui.EndChild();
+    }
+
+    private string GetAreaStatusText()
+    {
+        if (_trackingCurrentArea)
+            return _currentAreaName;
+
+        return $"{_currentAreaName} (not tracked)";
+    }
+
+    private string FormatAreaStatusText()
+    {
+        var areaText = GetAreaStatusText();
+        if (string.IsNullOrWhiteSpace(areaText))
+            return "Unknown";
+
+        areaText = areaText
+            .Replace(" Hideout", " HO", StringComparison.InvariantCultureIgnoreCase)
+            .Replace("(not tracked)", "(idle)", StringComparison.InvariantCultureIgnoreCase);
+
+        const int maxLength = 28;
+        if (areaText.Length <= maxLength)
+            return areaText;
+
+        return $"{areaText[..(maxLength - 1)]}…";
+    }
+
+    private bool SavedMapStatMatchesAreaFilter(string filePath, string filter)
+    {
+        try
+        {
+            var dump = JsonSerializer.Deserialize<AreaDump>(File.ReadAllText(filePath), JsonOptions);
+            return dump?.AreaName?.Contains(filter, StringComparison.InvariantCultureIgnoreCase) == true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string GetDisplayableT0Name()
+    {
+        var name = !string.IsNullOrWhiteSpace(_currentAreaStats.LastT0UniqueName)
+            ? _currentAreaStats.LastT0UniqueName
+            : _sessionStats.LastT0UniqueName;
+
+        return TruncateDisplayName(string.IsNullOrWhiteSpace(name) ? "-" : name, 18);
+    }
+
+    private static string TruncateDisplayName(string value, int maxLength = 16)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length <= maxLength)
+            return trimmed;
+
+        return $"{trimmed[..Math.Max(maxLength - 3, 1)]}...";
+    }
+
+    private static bool IsSaveLockedArea(string areaName)
+    {
+        return string.Equals(areaName?.Trim(), SaveLockedAreaName, StringComparison.InvariantCultureIgnoreCase);
+    }
+
+    private static string FormatAverage(double value)
+    {
+        return value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration < TimeSpan.Zero)
+            duration = TimeSpan.Zero;
+
+        return duration.TotalHours >= 1
+            ? duration.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
+            : duration.ToString(@"m\:ss", CultureInfo.InvariantCulture);
+    }
+
+    private bool ShouldDraw()
+    {
+        var ingameUi = GameController?.IngameState?.IngameUi;
+        if (ingameUi == null)
+            return false;
+
+        if (!Settings.Display.Panels.RenderOnFullPanels && ingameUi.FullscreenPanels?.Any(x => x.IsVisible) == true)
+            return false;
+
+        if (!Settings.Display.Panels.RenderOnLargePanels && ingameUi.LargePanels?.Any(x => x.IsVisible) == true)
+            return false;
+
+        if (!Settings.Display.Panels.RenderOnLeftPanels && ingameUi.OpenLeftPanel?.IsVisible == true)
+            return false;
+
+        return Settings.Display.Panels.RenderOnRightPanels || ingameUi.OpenRightPanel?.IsVisible != true;
+    }
+
+    private void DrawOverlay(List<DisplayLine> lines)
+    {
+        if (lines.Count == 0)
+            return;
+
+        var windowRect = GameController.Window.GetWindowRectangle();
+        var anchor = new Vector2(
+            windowRect.Width * (Settings.Display.Position.XPos / 100f),
+            windowRect.Height * (Settings.Display.Position.YPos / 100f));
+
+        var columnLayout = BuildColumnLayout(lines);
+        var measuredLines = new List<(DisplayLine line, Vector2 size)>(lines.Count);
+        foreach (var line in lines)
+        {
+            var textSize = MeasureLine(line, columnLayout);
+            measuredLines.Add((line, textSize));
+        }
+
+        var currentY = anchor.Y;
+        var pad = Settings.Display.Visuals.BorderPadding;
+        var minX = anchor.X;
+        var maxX = anchor.X;
+        var minY = anchor.Y;
+        var maxY = anchor.Y;
+
+        var drawData = new List<(DisplayLine line, Vector2 position)>(measuredLines.Count);
+        foreach (var (line, size) in measuredLines)
+        {
+            var position = new Vector2(anchor.X, currentY);
+            drawData.Add((line, position));
+            currentY += size.Y + Settings.Display.Visuals.TextSpacing;
+
+            maxX = Math.Max(maxX, position.X + size.X);
+            maxY = Math.Max(maxY, position.Y + size.Y);
+        }
+
+        var boxRect = new RectangleF(minX - pad, minY - pad, (maxX - minX) + (pad * 2), (maxY - minY) + (pad * 2));
+        Graphics.DrawBox(boxRect, Settings.Display.Visuals.BackgroundColor, Settings.Display.Visuals.BorderRounding);
+        Graphics.DrawFrame(
+            boxRect,
+            Settings.Display.Visuals.BorderColor,
+            Settings.Display.Visuals.BorderRounding,
+            Settings.Display.Visuals.BorderThickness,
+            (int)ImDrawFlags.RoundCornersAll);
+
+        foreach (var (line, position) in drawData)
+            DrawLine(line, position, columnLayout);
+    }
+
+    private ColumnLayout BuildColumnLayout(List<DisplayLine> lines)
+    {
+        var labelWidth = 0f;
+        var value1Width = 0f;
+        var dividerWidth = 0f;
+        var value2Width = 0f;
+
+        foreach (var line in lines.Where(x => x.AlignColumns))
+        {
+            if (line.Segments.Length < 4)
+                continue;
+
+            labelWidth = Math.Max(labelWidth, MeasureText(line.Segments[0].Text).X);
+            value1Width = Math.Max(value1Width, MeasureText(line.Segments[1].Text).X);
+            dividerWidth = Math.Max(dividerWidth, MeasureText(line.Segments[2].Text).X);
+            value2Width = Math.Max(value2Width, MeasureText(line.Segments[3].Text).X);
+        }
+
+        return new ColumnLayout(labelWidth, value1Width, dividerWidth, value2Width);
+    }
+
+    private Vector2 MeasureLine(DisplayLine line, ColumnLayout layout)
+    {
+        if (line.AlignColumns && line.Segments.Length >= 4)
+        {
+            var height = line.Segments
+                .Select(x => MeasureText(x.Text).Y)
+                .DefaultIfEmpty(0f)
+                .Max();
+
+            return new Vector2(layout.TotalWidth, height);
+        }
+
+        var totalWidth = 0f;
+        var maxHeight = 0f;
+
+        foreach (var segment in line.Segments)
+        {
+            var textSize = MeasureText(segment.Text);
+            totalWidth += textSize.X;
+            maxHeight = Math.Max(maxHeight, textSize.Y);
+        }
+
+        return new Vector2(totalWidth, maxHeight);
+    }
+
+    private void DrawLine(DisplayLine line, Vector2 position, ColumnLayout layout)
+    {
+        if (line.AlignColumns && line.Segments.Length >= 4)
+        {
+            DrawAlignedLine(line, position, layout);
+            return;
+        }
+
+        var currentX = position.X;
+        foreach (var segment in line.Segments)
+        {
+            var segmentPosition = new Vector2(currentX, position.Y);
+            if (Settings.Display.Visuals.UseCustomFont)
+            {
+                Graphics.DrawText(segment.Text, segmentPosition, segment.Color, Settings.Display.Visuals.CustomLoadedFont, FontAlign.Left);
+                currentX += MeasureText(segment.Text).X;
+            }
+            else
+            {
+                Graphics.DrawText(segment.Text, segmentPosition, segment.Color, FontAlign.Left);
+                currentX += MeasureText(segment.Text).X;
+            }
+        }
+    }
+
+    private void DrawAlignedLine(DisplayLine line, Vector2 position, ColumnLayout layout)
+    {
+        var currentX = position.X;
+        DrawTextSegment(line.Segments[0], new Vector2(currentX, position.Y));
+        currentX += layout.LabelWidth;
+
+        DrawTextSegment(line.Segments[1], new Vector2(currentX, position.Y));
+        currentX += layout.Value1Width;
+
+        DrawTextSegment(line.Segments[2], new Vector2(currentX, position.Y));
+        currentX += layout.DividerWidth;
+
+        DrawTextSegment(line.Segments[3], new Vector2(currentX, position.Y));
+    }
+
+    private void DrawTextSegment(DisplaySegment segment, Vector2 position)
+    {
+        if (Settings.Display.Visuals.UseCustomFont)
+            Graphics.DrawText(segment.Text, position, segment.Color, Settings.Display.Visuals.CustomLoadedFont, FontAlign.Left);
+        else
+            Graphics.DrawText(segment.Text, position, segment.Color, FontAlign.Left);
+    }
+
+    private Vector2 MeasureText(string text)
+    {
+        return Settings.Display.Visuals.UseCustomFont
+            ? Graphics.MeasureText(text, Settings.Display.Visuals.CustomLoadedFont)
+            : Graphics.MeasureText(text);
+    }
+
+}
