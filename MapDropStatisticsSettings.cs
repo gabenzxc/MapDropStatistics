@@ -37,8 +37,6 @@ public class ActionSettings
     [IgnoreMenu]
     public ButtonNode AddPendingMapToAverage { get; set; } = new();
     [IgnoreMenu]
-    public ButtonNode SkipPendingMap { get; set; } = new();
-    [IgnoreMenu]
     public ToggleNode SaveMapStats { get; set; } = new(true);
     [IgnoreMenu]
     public RangeNode<int> MaxSavedMapStats { get; set; } = new(20, 1, 500);

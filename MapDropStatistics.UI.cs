@@ -41,8 +41,8 @@ public partial class MapDropStatistics
                 new DisplaySegment("Fails: ", failColor),
                 new DisplaySegment(_sessionStats.FailedAreas.ToString(CultureInfo.InvariantCulture), failColor)));
 
-            if (_pendingAreaReviews.Count > 0)
-                lines.Add(new(new DisplaySegment($"Pending avg: {_pendingAreaReviews.Count} ({_pendingAreaReviews.Peek().AreaName})", textColor)));
+            if (_appliedAreaReviews.Count > 0)
+                lines.Add(new(new DisplaySegment($"Last counted: {_appliedAreaReviews[^1].AreaName}", textColor)));
         }
 
         if (Settings.Display.Visibility.ShowMapTime)
@@ -173,21 +173,17 @@ public partial class MapDropStatistics
         ImGui.SameLine();
         ImGui.Text($"Saved: {_savedMapStatFiles.Count}");
 
-        var hasPendingMap = _pendingAreaReviews.Count > 0;
-        var pendingMapLabel = hasPendingMap
-            ? $"Pending avg: {_pendingAreaReviews.Count} ({_pendingAreaReviews.Peek().AreaName})"
-            : "Pending avg: 0";
-        ImGui.TextUnformatted(pendingMapLabel);
-        if (ImGui.Button("Add pending map to avg"))
-            AddOldestPendingMapToAverage();
+        var hasAppliedMap = _appliedAreaReviews.Count > 0;
+        var lastAppliedLabel = hasAppliedMap
+            ? $"Last counted: {_appliedAreaReviews[^1].AreaName}"
+            : "Last counted: none";
+        ImGui.TextUnformatted(lastAppliedLabel);
+        if (ImGui.Button("Undo last counted map"))
+            UndoLastAppliedMap();
 
         ImGui.SameLine();
-        if (ImGui.Button("Skip pending map"))
-            SkipOldestPendingMap();
-
-        ImGui.SameLine();
-        if (!hasPendingMap)
-            ImGui.TextDisabled("No pending map");
+        if (!hasAppliedMap)
+            ImGui.TextDisabled("Nothing to undo");
 
         ImGui.PushItemWidth(260);
         ImGui.InputTextWithHint("##savedMapStatsFilter", "Filter by filename or area", ref _savedMapStatsFilter, 200);

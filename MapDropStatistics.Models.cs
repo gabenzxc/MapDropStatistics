@@ -79,11 +79,113 @@ public partial class MapDropStatistics
         }
     }
 
-    private sealed class PendingAreaReview
+    private sealed class AreaReview
     {
         public string AreaName { get; set; } = string.Empty;
         public bool IsFailMap { get; set; }
         public AreaLootStats Stats { get; set; } = new();
+    }
+
+    private sealed class AreaReviewSnapshot
+    {
+        public string AreaName { get; set; } = string.Empty;
+        public bool IsFailMap { get; set; }
+        public AreaLootStatsSnapshot Stats { get; set; } = new();
+
+        public static AreaReviewSnapshot FromReview(AreaReview review)
+        {
+            return new AreaReviewSnapshot
+            {
+                AreaName = review.AreaName,
+                IsFailMap = review.IsFailMap,
+                Stats = AreaLootStatsSnapshot.FromAreaLootStats(review.Stats)
+            };
+        }
+
+        public AreaReview ToReview()
+        {
+            return new AreaReview
+            {
+                AreaName = AreaName ?? string.Empty,
+                IsFailMap = IsFailMap,
+                Stats = Stats?.ToAreaLootStats() ?? new AreaLootStats()
+            };
+        }
+    }
+
+    private sealed class AreaLootStatsSnapshot
+    {
+        public int UniqueItems { get; set; }
+        public int T0UniqueItems { get; set; }
+        public string LastT0UniqueName { get; set; } = string.Empty;
+        public int CurrencyStacks { get; set; }
+        public int CurrencyQuantity { get; set; }
+        public int FragmentStacks { get; set; }
+        public int FragmentQuantity { get; set; }
+        public int NormalBaseItems { get; set; }
+        public int MagicBaseItems { get; set; }
+        public int RareBaseItems { get; set; }
+        public int DivineOrbQuantity { get; set; }
+        public int ValdosPuzzleBoxQuantity { get; set; }
+        public long ElapsedTicks { get; set; }
+        public Dictionary<string, int> DropCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
+        public Dictionary<string, int> CustomTrackedCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
+
+        public static AreaLootStatsSnapshot FromAreaLootStats(AreaLootStats stats)
+        {
+            return new AreaLootStatsSnapshot
+            {
+                UniqueItems = stats.UniqueItems,
+                T0UniqueItems = stats.T0UniqueItems,
+                LastT0UniqueName = stats.LastT0UniqueName,
+                CurrencyStacks = stats.CurrencyStacks,
+                CurrencyQuantity = stats.CurrencyQuantity,
+                FragmentStacks = stats.FragmentStacks,
+                FragmentQuantity = stats.FragmentQuantity,
+                NormalBaseItems = stats.NormalBaseItems,
+                MagicBaseItems = stats.MagicBaseItems,
+                RareBaseItems = stats.RareBaseItems,
+                DivineOrbQuantity = stats.DivineOrbQuantity,
+                ValdosPuzzleBoxQuantity = stats.ValdosPuzzleBoxQuantity,
+                ElapsedTicks = stats.Elapsed.Ticks,
+                DropCounts = new Dictionary<string, int>(stats.DropCounts, StringComparer.InvariantCultureIgnoreCase),
+                CustomTrackedCounts = new Dictionary<string, int>(stats.CustomTrackedCounts, StringComparer.InvariantCultureIgnoreCase)
+            };
+        }
+
+        public AreaLootStats ToAreaLootStats()
+        {
+            var stats = new AreaLootStats
+            {
+                UniqueItems = Math.Max(UniqueItems, 0),
+                T0UniqueItems = Math.Max(T0UniqueItems, 0),
+                LastT0UniqueName = LastT0UniqueName ?? string.Empty,
+                CurrencyStacks = Math.Max(CurrencyStacks, 0),
+                CurrencyQuantity = Math.Max(CurrencyQuantity, 0),
+                FragmentStacks = Math.Max(FragmentStacks, 0),
+                FragmentQuantity = Math.Max(FragmentQuantity, 0),
+                NormalBaseItems = Math.Max(NormalBaseItems, 0),
+                MagicBaseItems = Math.Max(MagicBaseItems, 0),
+                RareBaseItems = Math.Max(RareBaseItems, 0),
+                DivineOrbQuantity = Math.Max(DivineOrbQuantity, 0),
+                ValdosPuzzleBoxQuantity = Math.Max(ValdosPuzzleBoxQuantity, 0),
+                Elapsed = TimeSpan.FromTicks(Math.Max(ElapsedTicks, 0))
+            };
+
+            foreach (var (key, value) in DropCounts ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                    stats.DropCounts[key] = Math.Max(value, 0);
+            }
+
+            foreach (var (key, value) in CustomTrackedCounts ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                    stats.CustomTrackedCounts[key] = Math.Max(value, 0);
+            }
+
+            return stats;
+        }
     }
 
     private sealed class SessionLootStats
@@ -141,6 +243,38 @@ public partial class MapDropStatistics
         public void AddFail()
         {
             FailedAreas++;
+        }
+
+        public void Remove(AreaLootStats areaStats)
+        {
+            AreasTracked = Math.Max(AreasTracked - 1, 0);
+            TotalUniqueItems = Math.Max(TotalUniqueItems - areaStats.UniqueItems, 0);
+            TotalT0UniqueItems = Math.Max(TotalT0UniqueItems - areaStats.T0UniqueItems, 0);
+            TotalCurrencyQuantity = Math.Max(TotalCurrencyQuantity - areaStats.CurrencyQuantity, 0);
+            TotalFragmentQuantity = Math.Max(TotalFragmentQuantity - areaStats.FragmentQuantity, 0);
+            TotalNormalBaseItems = Math.Max(TotalNormalBaseItems - areaStats.NormalBaseItems, 0);
+            TotalMagicBaseItems = Math.Max(TotalMagicBaseItems - areaStats.MagicBaseItems, 0);
+            TotalRareBaseItems = Math.Max(TotalRareBaseItems - areaStats.RareBaseItems, 0);
+            TotalDivineOrbQuantity = Math.Max(TotalDivineOrbQuantity - areaStats.DivineOrbQuantity, 0);
+            TotalValdosPuzzleBoxQuantity = Math.Max(TotalValdosPuzzleBoxQuantity - areaStats.ValdosPuzzleBoxQuantity, 0);
+            TotalMapTime = TotalMapTime > areaStats.Elapsed ? TotalMapTime - areaStats.Elapsed : TimeSpan.Zero;
+
+            foreach (var (itemName, quantity) in areaStats.CustomTrackedCounts)
+            {
+                if (!CustomTrackedTotals.TryGetValue(itemName, out var existing))
+                    continue;
+
+                var updated = existing - quantity;
+                if (updated > 0)
+                    CustomTrackedTotals[itemName] = updated;
+                else
+                    CustomTrackedTotals.Remove(itemName);
+            }
+        }
+
+        public void RemoveFail()
+        {
+            FailedAreas = Math.Max(FailedAreas - 1, 0);
         }
 
         public void AddNonMapTime(TimeSpan elapsed)
@@ -273,6 +407,7 @@ public partial class MapDropStatistics
         public long TotalMapTimeTicks { get; set; }
         public long TotalNonMapTimeTicks { get; set; }
         public Dictionary<string, int> CustomTrackedTotals { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
+        public List<AreaReviewSnapshot> AppliedAreaReviews { get; set; } = [];
     }
 
     private readonly record struct DisplaySegment(string Text, Color Color);

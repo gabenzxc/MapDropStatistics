@@ -34,7 +34,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private readonly Dictionary<long, PendingDropInfo> _pendingDropKeys = [];
     private readonly AreaLootStats _currentAreaStats = new();
     private readonly SessionLootStats _sessionStats = new();
-    private readonly Queue<PendingAreaReview> _pendingAreaReviews = new();
+    private readonly List<AreaReview> _appliedAreaReviews = [];
     private readonly List<string> _savedMapStatFiles = [];
     private HashSet<string> _t0UniqueNames = new(StringComparer.InvariantCultureIgnoreCase);
     private Dictionary<string, List<string>> _uniqueArtMapping = new(StringComparer.InvariantCultureIgnoreCase);
@@ -53,6 +53,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private DateTime _nonMapAreaStartedUtc;
     private int _entityAddedAttempts;
     private int _pendingRetryAttempts;
+    private bool _wasInGameLastTick;
 
     public override bool Initialise()
     {
@@ -60,8 +61,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         {
             Name = "Map Drop Statistics";
             Settings.Actions.ResetSessionAverage.OnPressed += ResetSessionStats;
-            Settings.Actions.AddPendingMapToAverage.OnPressed += AddOldestPendingMapToAverage;
-            Settings.Actions.SkipPendingMap.OnPressed += SkipOldestPendingMap;
+            Settings.Actions.AddPendingMapToAverage.OnPressed += UndoLastAppliedMap;
             Settings.Actions.ClearSavedMapStats.OnPressed += ClearSavedMapStats;
             Settings.Actions.LoadLastSession.OnPressed += LoadLastSessionSnapshot;
             EnsureCustomTrackedItemDefaults();
@@ -164,7 +164,15 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         try
         {
             if (GameController?.InGame != true || GameController.IsLoading)
+            {
+                if (_wasInGameLastTick)
+                    SaveSessionSnapshot();
+
+                _wasInGameLastTick = false;
                 return null;
+            }
+
+            _wasInGameLastTick = true;
 
             EnsureAreaState();
 
@@ -222,9 +230,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         if (!_trackingCurrentArea)
         {
-            if (nextIsTrackable)
-                AddOldestPendingMapToAverage();
-
             StartTrackingArea(area, resetStats: true);
             return;
         }
@@ -609,15 +614,12 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         }
 
         var isFailMap = _currentAreaStats.UniqueItems < Settings.Tracking.FailUniqueThreshold;
-        if (isFailMap)
-            _sessionStats.AddFail();
-
         var shouldCountInAverage = !IsSaveLockedArea(_currentAreaName) &&
                                    (!isFailMap || Settings.Tracking.CountFailMapToStatistic) &&
                                    (_currentAreaStats.HasDrops || Settings.Tracking.IncludeEmptyAreasInAverage);
         if (shouldCountInAverage)
         {
-            _pendingAreaReviews.Enqueue(new PendingAreaReview
+            ApplyAreaReview(new AreaReview
             {
                 AreaName = _currentAreaName,
                 IsFailMap = isFailMap,
@@ -631,7 +633,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private void ResetSessionStats()
     {
         _sessionStats.Reset();
-        _pendingAreaReviews.Clear();
+        _appliedAreaReviews.Clear();
         _currentAreaStats.Reset();
         _seenPersistentItemKeys.Clear();
         _pendingDropKeys.Clear();
@@ -642,25 +644,42 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         StartTrackingArea(GameController?.Area?.CurrentArea);
     }
 
-    private void AddOldestPendingMapToAverage()
+    private void ApplyAreaReview(AreaReview review)
     {
-        if (_pendingAreaReviews.Count == 0)
+        if (review == null)
             return;
 
-        var review = _pendingAreaReviews.Dequeue();
+        if (review.IsFailMap)
+            _sessionStats.AddFail();
+
         _sessionStats.Add(review.Stats);
-        if (!string.IsNullOrWhiteSpace(review.Stats.LastT0UniqueName))
-            _sessionStats.LastT0UniqueName = review.Stats.LastT0UniqueName;
+        _appliedAreaReviews.Add(review);
+        RefreshSessionLastT0UniqueName();
         SaveSessionSnapshot();
     }
 
-    private void SkipOldestPendingMap()
+    private void UndoLastAppliedMap()
     {
-        if (_pendingAreaReviews.Count == 0)
+        if (_appliedAreaReviews.Count == 0)
             return;
 
-        _pendingAreaReviews.Dequeue();
+        var lastIndex = _appliedAreaReviews.Count - 1;
+        var review = _appliedAreaReviews[lastIndex];
+        _appliedAreaReviews.RemoveAt(lastIndex);
+
+        if (review.IsFailMap)
+            _sessionStats.RemoveFail();
+
+        _sessionStats.Remove(review.Stats);
+        RefreshSessionLastT0UniqueName();
         SaveSessionSnapshot();
+    }
+
+    private void RefreshSessionLastT0UniqueName()
+    {
+        _sessionStats.LastT0UniqueName = _appliedAreaReviews
+            .Select(x => x.Stats.LastT0UniqueName)
+            .LastOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
     }
 
     private void SaveSessionSnapshotIfNeeded()
@@ -696,7 +715,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 TotalValdosPuzzleBoxQuantity = _sessionStats.TotalValdosPuzzleBoxQuantity,
                 TotalMapTimeTicks = _sessionStats.TotalMapTime.Ticks,
                 TotalNonMapTimeTicks = (_sessionStats.TotalNonMapTime + _sessionStats.CurrentNonMapElapsed).Ticks,
-                CustomTrackedTotals = new Dictionary<string, int>(_sessionStats.CustomTrackedTotals, StringComparer.InvariantCultureIgnoreCase)
+                CustomTrackedTotals = new Dictionary<string, int>(_sessionStats.CustomTrackedTotals, StringComparer.InvariantCultureIgnoreCase),
+                AppliedAreaReviews = _appliedAreaReviews
+                    .Select(x => AreaReviewSnapshot.FromReview(x))
+                    .ToList()
             };
 
             var path = GetSessionSnapshotPath();
@@ -721,7 +743,12 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (snapshot == null)
                 return;
 
+            _appliedAreaReviews.Clear();
+            foreach (var review in snapshot.AppliedAreaReviews ?? [])
+                _appliedAreaReviews.Add(review.ToReview());
+
             _sessionStats.Load(snapshot);
+            RefreshSessionLastT0UniqueName();
         }
         catch (Exception ex)
         {
