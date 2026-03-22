@@ -4,6 +4,10 @@ Plugin for ExileApi that tracks drops and session averages for map runs.
 
 Works with `https://github.com/exApiTools/ExileApi-Compiled`.
 
+## Settings
+
+Max Entities setting in ExileAPi.Core should be on 40k
+
 ## What It Does
 
 - Tracks loot for the current map area.
