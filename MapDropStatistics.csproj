@@ -32,8 +32,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
-    <Content Include="..\Ground-Items-With-Linq\uniqueArtMapping.default.json">
-      <Link>uniqueArtMapping.default.json</Link>
+    <Content Include="uniqueArtMapping.default.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
