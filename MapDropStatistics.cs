@@ -222,6 +222,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         if (!_trackingCurrentArea)
         {
+            if (nextIsTrackable)
+                AddOldestPendingMapToAverage();
+
             StartTrackingArea(area, resetStats: true);
             return;
         }
