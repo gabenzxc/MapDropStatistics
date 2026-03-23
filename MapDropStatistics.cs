@@ -24,6 +24,41 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private const int PendingRetryIntervalMs = 100;
     private const int PendingEntryTtlMs = 3000;
     private const int SessionSnapshotIntervalMs = 2000;
+    private static readonly string[] MapStatNoiseTokens =
+    [
+        "boss",
+        "chest",
+        "strongbox",
+        "incursion",
+        "perandus",
+        "blight",
+        "delirium",
+        "harbinger",
+        "ritual",
+        "legion",
+        "expedition",
+        "bestiary",
+        "betrayal",
+        "abyss",
+        "breach",
+        "synthesis",
+        "heist",
+        "torment",
+        "possessed",
+        "touched",
+        "influenced",
+        "influence",
+        "magicmonster",
+        "raremonster",
+        "uniquemonster",
+        "master",
+        "playermodifier",
+        "players",
+        "donotapply",
+        "mapboss",
+        "mapsoffered",
+        "mission"
+    ];
     private readonly HashSet<string> _seenPersistentItemKeys = [];
     private const string T0UniqueFileName = "t0_uniques.txt";
     private const string DefaultUniqueArtMappingFileName = "uniqueArtMapping.default.json";
@@ -46,6 +81,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private string _savedMapStatsFilter = string.Empty;
     private AreaDump _selectedAreaDump;
     private bool _trackingCurrentArea;
+    private bool _hasLastKnownMapModifierSnapshot;
     private int _lastAreaChangeCount = -1;
     private long _nextPendingRetryTick;
     private long _nextSessionSnapshotTick;
@@ -55,6 +91,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private int _entityAddedAttempts;
     private int _pendingRetryAttempts;
     private bool _wasInGameLastTick;
+    private MapModifierSnapshot _lastKnownMapModifierSnapshot;
 
     public override bool Initialise()
     {
@@ -180,6 +217,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
             if (!_trackingCurrentArea)
                 return null;
+
+            UpdateCurrentAreaMapModifierStats();
 
             var now = Environment.TickCount64;
             if (now >= Interlocked.Read(ref _nextPendingRetryTick))
@@ -605,7 +644,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _pendingDropKeys.Clear();
 
         if (resetStats)
+        {
             _currentAreaStats.Reset();
+            _hasLastKnownMapModifierSnapshot = false;
+            _lastKnownMapModifierSnapshot = default;
+        }
 
         _nextPendingRetryTick = 0;
 
@@ -616,6 +659,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _currentAreaStartedUtc = DateTime.UtcNow;
         _isInNonMapArea = !_trackingCurrentArea;
         _nonMapAreaStartedUtc = _isInNonMapArea ? DateTime.UtcNow : default;
+        UpdateCurrentAreaMapModifierStats(captureAsStart: _trackingCurrentArea && resetStats);
         ResetDebugCounters();
     }
 
@@ -649,6 +693,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
 
         UpdateLiveTimers();
+        CommitFinalMapModifierStats();
 
         try
         {
@@ -687,6 +732,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.Reset();
         _appliedAreaReviews.Clear();
         _currentAreaStats.Reset();
+        _hasLastKnownMapModifierSnapshot = false;
+        _lastKnownMapModifierSnapshot = default;
         _seenPersistentItemKeys.Clear();
         _pendingDropKeys.Clear();
         _currentAreaStartedUtc = DateTime.UtcNow;
@@ -762,6 +809,14 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 TotalRareBaseItems = _sessionStats.TotalRareBaseItems,
                 TotalDivineOrbQuantity = _sessionStats.TotalDivineOrbQuantity,
                 TotalValdosPuzzleBoxQuantity = _sessionStats.TotalValdosPuzzleBoxQuantity,
+                TotalStartItemQuantity = _sessionStats.TotalStartItemQuantity,
+                TotalFinalItemQuantity = _sessionStats.TotalFinalItemQuantity,
+                TotalStartItemRarity = _sessionStats.TotalStartItemRarity,
+                TotalFinalItemRarity = _sessionStats.TotalFinalItemRarity,
+                TotalFinalPackSize = _sessionStats.TotalFinalPackSize,
+                TotalFinalMoreCurrency = _sessionStats.TotalFinalMoreCurrency,
+                TotalFinalMoreMaps = _sessionStats.TotalFinalMoreMaps,
+                TotalFinalMoreScarabs = _sessionStats.TotalFinalMoreScarabs,
                 TotalMapTimeTicks = _sessionStats.TotalMapTime.Ticks,
                 TotalNonMapTimeTicks = (_sessionStats.TotalNonMapTime + _sessionStats.CurrentNonMapElapsed).Ticks,
                 CustomTrackedTotals = new Dictionary<string, int>(_sessionStats.CustomTrackedTotals, StringComparer.InvariantCultureIgnoreCase),
@@ -845,6 +900,189 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             _sessionStats.CurrentNonMapElapsed = now - _nonMapAreaStartedUtc;
         else
             _sessionStats.CurrentNonMapElapsed = TimeSpan.Zero;
+    }
+
+    private void UpdateCurrentAreaMapModifierStats(bool captureAsStart = false)
+    {
+        if (!_trackingCurrentArea)
+            return;
+
+        var readResult = ReadCurrentMapModifierSnapshot();
+        if (readResult.MatchedStatsCount > 0)
+        {
+            _lastKnownMapModifierSnapshot = readResult.Snapshot;
+            _hasLastKnownMapModifierSnapshot = true;
+        }
+
+        var snapshot = readResult.MatchedStatsCount > 0
+            ? readResult.Snapshot
+            : _hasLastKnownMapModifierSnapshot
+                ? _lastKnownMapModifierSnapshot
+                : default;
+
+        _currentAreaStats.CurrentItemQuantity = snapshot.ItemQuantity;
+        _currentAreaStats.CurrentItemRarity = snapshot.ItemRarity;
+        _currentAreaStats.CurrentPackSize = snapshot.PackSize;
+        _currentAreaStats.CurrentMoreCurrency = snapshot.MoreCurrency;
+        _currentAreaStats.CurrentMoreMaps = snapshot.MoreMaps;
+        _currentAreaStats.CurrentMoreScarabs = snapshot.MoreScarabs;
+
+        if (!captureAsStart)
+            return;
+
+        _currentAreaStats.StartItemQuantity = snapshot.ItemQuantity;
+        _currentAreaStats.FinalItemQuantity = snapshot.ItemQuantity;
+        _currentAreaStats.StartItemRarity = snapshot.ItemRarity;
+        _currentAreaStats.FinalItemRarity = snapshot.ItemRarity;
+        _currentAreaStats.FinalPackSize = snapshot.PackSize;
+        _currentAreaStats.FinalMoreCurrency = snapshot.MoreCurrency;
+        _currentAreaStats.FinalMoreMaps = snapshot.MoreMaps;
+        _currentAreaStats.FinalMoreScarabs = snapshot.MoreScarabs;
+    }
+
+    private void CommitFinalMapModifierStats()
+    {
+        _currentAreaStats.FinalItemQuantity = _currentAreaStats.CurrentItemQuantity;
+        _currentAreaStats.FinalItemRarity = _currentAreaStats.CurrentItemRarity;
+        _currentAreaStats.FinalPackSize = _currentAreaStats.CurrentPackSize;
+        _currentAreaStats.FinalMoreCurrency = _currentAreaStats.CurrentMoreCurrency;
+        _currentAreaStats.FinalMoreMaps = _currentAreaStats.CurrentMoreMaps;
+        _currentAreaStats.FinalMoreScarabs = _currentAreaStats.CurrentMoreScarabs;
+    }
+
+    private MapModifierReadResult ReadCurrentMapModifierSnapshot()
+    {
+        var mapStats = GameController?.IngameState?.Data?.MapStats;
+        if (mapStats == null)
+            return default;
+
+        var itemQuantity = 0;
+        var itemRarity = 0;
+        var packSize = 0;
+        var moreCurrency = 0;
+        var moreMaps = 0;
+        var moreScarabs = 0;
+        var matchedStatsCount = 0;
+
+        foreach (var instanceStat in mapStats)
+        {
+            var key = NormalizeMapStatKey(instanceStat.Key.ToString());
+            var value = instanceStat.Value;
+            if (value == 0 || string.IsNullOrWhiteSpace(key))
+                continue;
+
+            if (IsNoisyMapStat(key))
+                continue;
+
+            if (IsMapQuantityStat(key))
+            {
+                itemQuantity += value;
+                matchedStatsCount++;
+            }
+            else if (IsMapRarityStat(key))
+            {
+                itemRarity += value;
+                matchedStatsCount++;
+            }
+            else if (IsPackSizeStat(key))
+            {
+                packSize += value;
+                matchedStatsCount++;
+            }
+            else if (IsMoreCurrencyStat(key))
+            {
+                moreCurrency += value;
+                matchedStatsCount++;
+            }
+            else if (IsMoreMapsStat(key))
+            {
+                moreMaps += value;
+                matchedStatsCount++;
+            }
+            else if (IsMoreScarabsStat(key))
+            {
+                moreScarabs += value;
+                matchedStatsCount++;
+            }
+        }
+
+        return new MapModifierReadResult(
+            new MapModifierSnapshot(itemQuantity, itemRarity, packSize, moreCurrency, moreMaps, moreScarabs),
+            matchedStatsCount);
+    }
+
+    private static string NormalizeMapStatKey(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return new string(value
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+    }
+
+    private static bool IsNoisyMapStat(string normalizedKey)
+    {
+        return MapStatNoiseTokens.Any(normalizedKey.Contains);
+    }
+
+    private static bool IsMapQuantityStat(string normalizedKey)
+    {
+        return normalizedKey.Contains("quantity") &&
+               normalizedKey.Contains("item") &&
+               (normalizedKey.StartsWith("map", StringComparison.Ordinal) || normalizedKey.Contains("area"));
+    }
+
+    private static bool IsMapRarityStat(string normalizedKey)
+    {
+        return normalizedKey.Contains("rarity") &&
+               normalizedKey.Contains("item") &&
+               (normalizedKey.StartsWith("map", StringComparison.Ordinal) || normalizedKey.Contains("area"));
+    }
+
+    private static bool IsPackSizeStat(string normalizedKey)
+    {
+        return normalizedKey.Contains("packsize") &&
+               (normalizedKey.StartsWith("map", StringComparison.Ordinal) || normalizedKey.Contains("area"));
+    }
+
+    private static bool IsMoreCurrencyStat(string normalizedKey)
+    {
+        if (normalizedKey.Contains("currencydropchance"))
+            return true;
+
+        return normalizedKey.Contains("currency") &&
+               normalizedKey.Contains("found") &&
+               normalizedKey.Contains("area") &&
+               (normalizedKey.Contains("more") || normalizedKey.StartsWith("map", StringComparison.Ordinal));
+    }
+
+    private static bool IsMoreMapsStat(string normalizedKey)
+    {
+        if ((normalizedKey.Contains("map") || normalizedKey.Contains("maps")) &&
+            normalizedKey.Contains("dropchance") &&
+            !normalizedKey.Contains("currency") &&
+            !normalizedKey.Contains("scarab"))
+        {
+            return true;
+        }
+
+        return normalizedKey.Contains("maps") &&
+               normalizedKey.Contains("found") &&
+               normalizedKey.Contains("area") &&
+               (normalizedKey.Contains("more") || normalizedKey.StartsWith("map", StringComparison.Ordinal));
+    }
+
+    private static bool IsMoreScarabsStat(string normalizedKey)
+    {
+        if (normalizedKey.Contains("scarabdropchance") || normalizedKey.Contains("scarabsdropchance"))
+            return true;
+
+        return normalizedKey.Contains("scarab") &&
+               normalizedKey.Contains("found") &&
+               normalizedKey.Contains("area") &&
+               (normalizedKey.Contains("more") || normalizedKey.StartsWith("map", StringComparison.Ordinal));
     }
 
     private static string GetPersistentItemKey(Entity worldEntity, Entity itemEntity)
@@ -1063,6 +1301,14 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             RareBaseItems = _currentAreaStats.RareBaseItems,
             DivineOrbQuantity = _currentAreaStats.DivineOrbQuantity,
             ValdosPuzzleBoxQuantity = _currentAreaStats.ValdosPuzzleBoxQuantity,
+            StartItemQuantity = _currentAreaStats.StartItemQuantity,
+            FinalItemQuantity = _currentAreaStats.FinalItemQuantity,
+            StartItemRarity = _currentAreaStats.StartItemRarity,
+            FinalItemRarity = _currentAreaStats.FinalItemRarity,
+            FinalPackSize = _currentAreaStats.FinalPackSize,
+            FinalMoreCurrency = _currentAreaStats.FinalMoreCurrency,
+            FinalMoreMaps = _currentAreaStats.FinalMoreMaps,
+            FinalMoreScarabs = _currentAreaStats.FinalMoreScarabs,
             CustomTracked = _currentAreaStats.CustomTrackedCounts
                 .OrderBy(x => x.Key, StringComparer.InvariantCultureIgnoreCase)
                 .ToDictionary(x => x.Key, x => x.Value, StringComparer.InvariantCultureIgnoreCase),

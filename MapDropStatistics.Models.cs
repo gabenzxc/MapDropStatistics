@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using ExileCore.PoEMemory.MemoryObjects;
 using SharpDX;
 
@@ -21,6 +22,20 @@ public partial class MapDropStatistics
         public int RareBaseItems { get; set; }
         public int DivineOrbQuantity { get; set; }
         public int ValdosPuzzleBoxQuantity { get; set; }
+        public int StartItemQuantity { get; set; }
+        public int CurrentItemQuantity { get; set; }
+        public int FinalItemQuantity { get; set; }
+        public int StartItemRarity { get; set; }
+        public int CurrentItemRarity { get; set; }
+        public int FinalItemRarity { get; set; }
+        public int CurrentPackSize { get; set; }
+        public int FinalPackSize { get; set; }
+        public int CurrentMoreCurrency { get; set; }
+        public int FinalMoreCurrency { get; set; }
+        public int CurrentMoreMaps { get; set; }
+        public int FinalMoreMaps { get; set; }
+        public int CurrentMoreScarabs { get; set; }
+        public int FinalMoreScarabs { get; set; }
         public TimeSpan Elapsed { get; set; }
         public Dictionary<string, int> DropCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, int> CustomTrackedCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
@@ -45,6 +60,20 @@ public partial class MapDropStatistics
             RareBaseItems = 0;
             DivineOrbQuantity = 0;
             ValdosPuzzleBoxQuantity = 0;
+            StartItemQuantity = 0;
+            CurrentItemQuantity = 0;
+            FinalItemQuantity = 0;
+            StartItemRarity = 0;
+            CurrentItemRarity = 0;
+            FinalItemRarity = 0;
+            CurrentPackSize = 0;
+            FinalPackSize = 0;
+            CurrentMoreCurrency = 0;
+            FinalMoreCurrency = 0;
+            CurrentMoreMaps = 0;
+            FinalMoreMaps = 0;
+            CurrentMoreScarabs = 0;
+            FinalMoreScarabs = 0;
             Elapsed = TimeSpan.Zero;
             DropCounts.Clear();
             CustomTrackedCounts.Clear();
@@ -66,6 +95,20 @@ public partial class MapDropStatistics
                 RareBaseItems = RareBaseItems,
                 DivineOrbQuantity = DivineOrbQuantity,
                 ValdosPuzzleBoxQuantity = ValdosPuzzleBoxQuantity,
+                StartItemQuantity = StartItemQuantity,
+                CurrentItemQuantity = CurrentItemQuantity,
+                FinalItemQuantity = FinalItemQuantity,
+                StartItemRarity = StartItemRarity,
+                CurrentItemRarity = CurrentItemRarity,
+                FinalItemRarity = FinalItemRarity,
+                CurrentPackSize = CurrentPackSize,
+                FinalPackSize = FinalPackSize,
+                CurrentMoreCurrency = CurrentMoreCurrency,
+                FinalMoreCurrency = FinalMoreCurrency,
+                CurrentMoreMaps = CurrentMoreMaps,
+                FinalMoreMaps = FinalMoreMaps,
+                CurrentMoreScarabs = CurrentMoreScarabs,
+                FinalMoreScarabs = FinalMoreScarabs,
                 Elapsed = Elapsed
             };
 
@@ -127,6 +170,14 @@ public partial class MapDropStatistics
         public int RareBaseItems { get; set; }
         public int DivineOrbQuantity { get; set; }
         public int ValdosPuzzleBoxQuantity { get; set; }
+        public int StartItemQuantity { get; set; }
+        public int FinalItemQuantity { get; set; }
+        public int StartItemRarity { get; set; }
+        public int FinalItemRarity { get; set; }
+        public int FinalPackSize { get; set; }
+        public int FinalMoreCurrency { get; set; }
+        public int FinalMoreMaps { get; set; }
+        public int FinalMoreScarabs { get; set; }
         public long ElapsedTicks { get; set; }
         public Dictionary<string, int> DropCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, int> CustomTrackedCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
@@ -147,6 +198,14 @@ public partial class MapDropStatistics
                 RareBaseItems = stats.RareBaseItems,
                 DivineOrbQuantity = stats.DivineOrbQuantity,
                 ValdosPuzzleBoxQuantity = stats.ValdosPuzzleBoxQuantity,
+                StartItemQuantity = stats.StartItemQuantity,
+                FinalItemQuantity = stats.FinalItemQuantity,
+                StartItemRarity = stats.StartItemRarity,
+                FinalItemRarity = stats.FinalItemRarity,
+                FinalPackSize = stats.FinalPackSize,
+                FinalMoreCurrency = stats.FinalMoreCurrency,
+                FinalMoreMaps = stats.FinalMoreMaps,
+                FinalMoreScarabs = stats.FinalMoreScarabs,
                 ElapsedTicks = stats.Elapsed.Ticks,
                 DropCounts = new Dictionary<string, int>(stats.DropCounts, StringComparer.InvariantCultureIgnoreCase),
                 CustomTrackedCounts = new Dictionary<string, int>(stats.CustomTrackedCounts, StringComparer.InvariantCultureIgnoreCase)
@@ -169,6 +228,20 @@ public partial class MapDropStatistics
                 RareBaseItems = Math.Max(RareBaseItems, 0),
                 DivineOrbQuantity = Math.Max(DivineOrbQuantity, 0),
                 ValdosPuzzleBoxQuantity = Math.Max(ValdosPuzzleBoxQuantity, 0),
+                StartItemQuantity = Math.Max(StartItemQuantity, 0),
+                FinalItemQuantity = Math.Max(FinalItemQuantity, 0),
+                StartItemRarity = Math.Max(StartItemRarity, 0),
+                FinalItemRarity = Math.Max(FinalItemRarity, 0),
+                CurrentItemQuantity = Math.Max(FinalItemQuantity, 0),
+                CurrentItemRarity = Math.Max(FinalItemRarity, 0),
+                CurrentPackSize = Math.Max(FinalPackSize, 0),
+                FinalPackSize = Math.Max(FinalPackSize, 0),
+                CurrentMoreCurrency = Math.Max(FinalMoreCurrency, 0),
+                FinalMoreCurrency = Math.Max(FinalMoreCurrency, 0),
+                CurrentMoreMaps = Math.Max(FinalMoreMaps, 0),
+                FinalMoreMaps = Math.Max(FinalMoreMaps, 0),
+                CurrentMoreScarabs = Math.Max(FinalMoreScarabs, 0),
+                FinalMoreScarabs = Math.Max(FinalMoreScarabs, 0),
                 Elapsed = TimeSpan.FromTicks(Math.Max(ElapsedTicks, 0))
             };
 
@@ -202,6 +275,14 @@ public partial class MapDropStatistics
         public int TotalRareBaseItems { get; private set; }
         public int TotalDivineOrbQuantity { get; private set; }
         public int TotalValdosPuzzleBoxQuantity { get; private set; }
+        public int TotalStartItemQuantity { get; private set; }
+        public int TotalFinalItemQuantity { get; private set; }
+        public int TotalStartItemRarity { get; private set; }
+        public int TotalFinalItemRarity { get; private set; }
+        public int TotalFinalPackSize { get; private set; }
+        public int TotalFinalMoreCurrency { get; private set; }
+        public int TotalFinalMoreMaps { get; private set; }
+        public int TotalFinalMoreScarabs { get; private set; }
         public TimeSpan TotalMapTime { get; private set; }
         public TimeSpan TotalNonMapTime { get; private set; }
         public TimeSpan CurrentNonMapElapsed { get; set; }
@@ -216,6 +297,14 @@ public partial class MapDropStatistics
         public double AverageRareBaseItems => AreasTracked == 0 ? 0 : (double)TotalRareBaseItems / AreasTracked;
         public double AverageDivineOrbQuantity => AreasTracked == 0 ? 0 : (double)TotalDivineOrbQuantity / AreasTracked;
         public double AverageValdosPuzzleBoxQuantity => AreasTracked == 0 ? 0 : (double)TotalValdosPuzzleBoxQuantity / AreasTracked;
+        public double AverageStartItemQuantity => AreasTracked == 0 ? 0 : (double)TotalStartItemQuantity / AreasTracked;
+        public double AverageFinalItemQuantity => AreasTracked == 0 ? 0 : (double)TotalFinalItemQuantity / AreasTracked;
+        public double AverageStartItemRarity => AreasTracked == 0 ? 0 : (double)TotalStartItemRarity / AreasTracked;
+        public double AverageFinalItemRarity => AreasTracked == 0 ? 0 : (double)TotalFinalItemRarity / AreasTracked;
+        public double AverageFinalPackSize => AreasTracked == 0 ? 0 : (double)TotalFinalPackSize / AreasTracked;
+        public double AverageFinalMoreCurrency => AreasTracked == 0 ? 0 : (double)TotalFinalMoreCurrency / AreasTracked;
+        public double AverageFinalMoreMaps => AreasTracked == 0 ? 0 : (double)TotalFinalMoreMaps / AreasTracked;
+        public double AverageFinalMoreScarabs => AreasTracked == 0 ? 0 : (double)TotalFinalMoreScarabs / AreasTracked;
         public TimeSpan AverageMapTime => AreasTracked == 0 ? TimeSpan.Zero : TimeSpan.FromTicks(TotalMapTime.Ticks / AreasTracked);
 
         public void Add(AreaLootStats areaStats)
@@ -230,6 +319,14 @@ public partial class MapDropStatistics
             TotalRareBaseItems += areaStats.RareBaseItems;
             TotalDivineOrbQuantity += areaStats.DivineOrbQuantity;
             TotalValdosPuzzleBoxQuantity += areaStats.ValdosPuzzleBoxQuantity;
+            TotalStartItemQuantity += areaStats.StartItemQuantity;
+            TotalFinalItemQuantity += areaStats.FinalItemQuantity;
+            TotalStartItemRarity += areaStats.StartItemRarity;
+            TotalFinalItemRarity += areaStats.FinalItemRarity;
+            TotalFinalPackSize += areaStats.FinalPackSize;
+            TotalFinalMoreCurrency += areaStats.FinalMoreCurrency;
+            TotalFinalMoreMaps += areaStats.FinalMoreMaps;
+            TotalFinalMoreScarabs += areaStats.FinalMoreScarabs;
             TotalMapTime += areaStats.Elapsed;
 
             foreach (var (itemName, quantity) in areaStats.CustomTrackedCounts)
@@ -257,6 +354,14 @@ public partial class MapDropStatistics
             TotalRareBaseItems = Math.Max(TotalRareBaseItems - areaStats.RareBaseItems, 0);
             TotalDivineOrbQuantity = Math.Max(TotalDivineOrbQuantity - areaStats.DivineOrbQuantity, 0);
             TotalValdosPuzzleBoxQuantity = Math.Max(TotalValdosPuzzleBoxQuantity - areaStats.ValdosPuzzleBoxQuantity, 0);
+            TotalStartItemQuantity = Math.Max(TotalStartItemQuantity - areaStats.StartItemQuantity, 0);
+            TotalFinalItemQuantity = Math.Max(TotalFinalItemQuantity - areaStats.FinalItemQuantity, 0);
+            TotalStartItemRarity = Math.Max(TotalStartItemRarity - areaStats.StartItemRarity, 0);
+            TotalFinalItemRarity = Math.Max(TotalFinalItemRarity - areaStats.FinalItemRarity, 0);
+            TotalFinalPackSize = Math.Max(TotalFinalPackSize - areaStats.FinalPackSize, 0);
+            TotalFinalMoreCurrency = Math.Max(TotalFinalMoreCurrency - areaStats.FinalMoreCurrency, 0);
+            TotalFinalMoreMaps = Math.Max(TotalFinalMoreMaps - areaStats.FinalMoreMaps, 0);
+            TotalFinalMoreScarabs = Math.Max(TotalFinalMoreScarabs - areaStats.FinalMoreScarabs, 0);
             TotalMapTime = TotalMapTime > areaStats.Elapsed ? TotalMapTime - areaStats.Elapsed : TimeSpan.Zero;
 
             foreach (var (itemName, quantity) in areaStats.CustomTrackedCounts)
@@ -297,6 +402,14 @@ public partial class MapDropStatistics
             TotalRareBaseItems = 0;
             TotalDivineOrbQuantity = 0;
             TotalValdosPuzzleBoxQuantity = 0;
+            TotalStartItemQuantity = 0;
+            TotalFinalItemQuantity = 0;
+            TotalStartItemRarity = 0;
+            TotalFinalItemRarity = 0;
+            TotalFinalPackSize = 0;
+            TotalFinalMoreCurrency = 0;
+            TotalFinalMoreMaps = 0;
+            TotalFinalMoreScarabs = 0;
             TotalMapTime = TimeSpan.Zero;
             TotalNonMapTime = TimeSpan.Zero;
             CurrentNonMapElapsed = TimeSpan.Zero;
@@ -317,6 +430,14 @@ public partial class MapDropStatistics
             TotalRareBaseItems = Math.Max(snapshot.TotalRareBaseItems, 0);
             TotalDivineOrbQuantity = Math.Max(snapshot.TotalDivineOrbQuantity, 0);
             TotalValdosPuzzleBoxQuantity = Math.Max(snapshot.TotalValdosPuzzleBoxQuantity, 0);
+            TotalStartItemQuantity = Math.Max(snapshot.TotalStartItemQuantity, 0);
+            TotalFinalItemQuantity = Math.Max(snapshot.TotalFinalItemQuantity, 0);
+            TotalStartItemRarity = Math.Max(snapshot.TotalStartItemRarity, 0);
+            TotalFinalItemRarity = Math.Max(snapshot.TotalFinalItemRarity, 0);
+            TotalFinalPackSize = Math.Max(snapshot.TotalFinalPackSize, 0);
+            TotalFinalMoreCurrency = Math.Max(snapshot.TotalFinalMoreCurrency, 0);
+            TotalFinalMoreMaps = Math.Max(snapshot.TotalFinalMoreMaps, 0);
+            TotalFinalMoreScarabs = Math.Max(snapshot.TotalFinalMoreScarabs, 0);
             TotalMapTime = TimeSpan.FromTicks(Math.Max(snapshot.TotalMapTimeTicks, 0));
             TotalNonMapTime = TimeSpan.FromTicks(Math.Max(snapshot.TotalNonMapTimeTicks, 0));
             CurrentNonMapElapsed = TimeSpan.Zero;
@@ -434,6 +555,14 @@ public partial class MapDropStatistics
         public int RareBaseItems { get; set; }
         public int DivineOrbQuantity { get; set; }
         public int ValdosPuzzleBoxQuantity { get; set; }
+        public int StartItemQuantity { get; set; }
+        public int FinalItemQuantity { get; set; }
+        public int StartItemRarity { get; set; }
+        public int FinalItemRarity { get; set; }
+        public int FinalPackSize { get; set; }
+        public int FinalMoreCurrency { get; set; }
+        public int FinalMoreMaps { get; set; }
+        public int FinalMoreScarabs { get; set; }
         public Dictionary<string, int> CustomTracked { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, int> Drops { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, PendingDumpInfo> Pending { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
@@ -466,6 +595,14 @@ public partial class MapDropStatistics
         public int TotalRareBaseItems { get; set; }
         public int TotalDivineOrbQuantity { get; set; }
         public int TotalValdosPuzzleBoxQuantity { get; set; }
+        public int TotalStartItemQuantity { get; set; }
+        public int TotalFinalItemQuantity { get; set; }
+        public int TotalStartItemRarity { get; set; }
+        public int TotalFinalItemRarity { get; set; }
+        public int TotalFinalPackSize { get; set; }
+        public int TotalFinalMoreCurrency { get; set; }
+        public int TotalFinalMoreMaps { get; set; }
+        public int TotalFinalMoreScarabs { get; set; }
         public long TotalMapTimeTicks { get; set; }
         public long TotalNonMapTimeTicks { get; set; }
         public Dictionary<string, int> CustomTrackedTotals { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
@@ -481,17 +618,40 @@ public partial class MapDropStatistics
         public Dictionary<string, int> SessionCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
     }
 
+    private readonly record struct MapModifierSnapshot(
+        int ItemQuantity,
+        int ItemRarity,
+        int PackSize,
+        int MoreCurrency,
+        int MoreMaps,
+        int MoreScarabs);
+
+    private readonly record struct MapModifierReadResult(
+        MapModifierSnapshot Snapshot,
+        int MatchedStatsCount);
+
     private readonly record struct DisplaySegment(string Text, Color Color);
-    private readonly record struct DisplayLine(bool AlignColumns, params DisplaySegment[] Segments)
+    private readonly record struct DisplayLine(bool AlignColumns, int AlignmentGroup, params DisplaySegment[] Segments)
     {
-        public DisplayLine(params DisplaySegment[] segments) : this(false, segments)
+        public DisplayLine(params DisplaySegment[] segments) : this(false, -1, segments)
+        {
+        }
+
+        public DisplayLine(bool alignColumns, params DisplaySegment[] segments) : this(alignColumns, 0, segments)
         {
         }
     }
 
-    private readonly record struct ColumnLayout(float LabelWidth, float Value1Width, float DividerWidth, float Value2Width)
+    private sealed class ColumnLayout
     {
-        public float TotalWidth => LabelWidth + Value1Width + DividerWidth + Value2Width;
+        public float[] ColumnWidths { get; }
+
+        public ColumnLayout(float[] columnWidths)
+        {
+            ColumnWidths = columnWidths ?? [];
+        }
+
+        public float TotalWidth => ColumnWidths.Sum();
     }
 
 }

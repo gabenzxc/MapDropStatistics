@@ -16,6 +16,7 @@ public partial class MapDropStatistics
     private List<DisplayLine> BuildLines()
     {
         UpdateLiveTimers();
+        UpdateCurrentAreaMapModifierStats();
 
         Color textColor = Settings.Display.Visuals.TextColor;
         Color uniqueValueColor = Settings.Display.Visuals.UniqueValueColor;
@@ -24,6 +25,7 @@ public partial class MapDropStatistics
             ? new Color(220, 70, 70, 255)
             : textColor;
         var customTrackedItems = GetConfiguredCustomTrackedItems();
+        var mapModifierSettings = Settings.Display.MapModifiers;
 
         var lines = new List<DisplayLine>();
 
@@ -114,11 +116,20 @@ public partial class MapDropStatistics
             foreach (var itemName in customTrackedItems)
             {
                 lines.Add(new(true,
-                    new DisplaySegment($"{TruncateDisplayName(itemName)}: ", textColor),
+                    new DisplaySegment($"{TruncateDisplayName(itemName, Settings.Display.Visibility.CustomTrackedItemMaxLabelLength)}: ", textColor),
                     new DisplaySegment(GetCurrentTrackedItemCount(itemName).ToString(CultureInfo.InvariantCulture), currencyValueColor),
                     new DisplaySegment(" | ", textColor),
                     new DisplaySegment(FormatAverage(_sessionStats.GetAverageCustomTrackedDrop(itemName)), currencyValueColor)));
             }
+        }
+
+        var mapModifierLines = BuildMapModifierLines(mapModifierSettings, textColor, currencyValueColor);
+        if (mapModifierLines.Count > 0)
+        {
+            if (mapModifierSettings.ShowBlockHeader)
+                lines.Add(new(new DisplaySegment("Area Modifiers", Settings.Display.Visuals.HeaderColor)));
+
+            lines.AddRange(mapModifierLines);
         }
 
         if (Settings.Debug.EnableOverlay)
@@ -355,6 +366,9 @@ public partial class MapDropStatistics
         ImGui.Text($"T0: {_selectedAreaDump.T0UniqueItems}");
         ImGui.Text($"Currency qty: {_selectedAreaDump.CurrencyQuantity}");
         ImGui.Text($"Fragments qty: {_selectedAreaDump.FragmentQuantity}");
+        ImGui.Text($"Start IQ / Final IQ: {_selectedAreaDump.StartItemQuantity} / {_selectedAreaDump.FinalItemQuantity}");
+        ImGui.Text($"Start IR / Final IR: {_selectedAreaDump.StartItemRarity} / {_selectedAreaDump.FinalItemRarity}");
+        ImGui.Text($"Pack / mCur / mMap / mScar: {_selectedAreaDump.FinalPackSize} / {_selectedAreaDump.FinalMoreCurrency} / {_selectedAreaDump.FinalMoreMaps} / {_selectedAreaDump.FinalMoreScarabs}");
         ImGui.Text($"Bases N/M/R: {_selectedAreaDump.NormalBaseItems}/{_selectedAreaDump.MagicBaseItems}/{_selectedAreaDump.RareBaseItems}");
         ImGui.Text($"Divine: {_selectedAreaDump.DivineOrbQuantity}");
         ImGui.Text($"Valdo: {_selectedAreaDump.ValdosPuzzleBoxQuantity}");
@@ -462,6 +476,89 @@ public partial class MapDropStatistics
         return value.ToString("0.##", CultureInfo.InvariantCulture);
     }
 
+    private List<DisplayLine> BuildMapModifierLines(MapModifierDisplaySettings settings, Color textColor, Color valueColor)
+    {
+        var lines = new List<DisplayLine>();
+
+        if (settings.ShowItemRarityStats)
+        {
+            lines.Add(BuildItemModifierLine(
+                "ir",
+                _currentAreaStats.CurrentItemRarity,
+                _currentAreaStats.CurrentItemRarity - _currentAreaStats.StartItemRarity,
+                settings.ShowStartAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageStartItemRarity) : string.Empty,
+                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageFinalItemRarity) : string.Empty,
+                textColor,
+                valueColor));
+        }
+
+        if (settings.ShowItemQuantityStats)
+        {
+            lines.Add(BuildItemModifierLine(
+                "iq",
+                _currentAreaStats.CurrentItemQuantity,
+                _currentAreaStats.CurrentItemQuantity - _currentAreaStats.StartItemQuantity,
+                settings.ShowStartAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageStartItemQuantity) : string.Empty,
+                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageFinalItemQuantity) : string.Empty,
+                textColor,
+                valueColor));
+        }
+
+        if (settings.ShowPackSizeStats)
+            lines.Add(BuildSimpleModifierLine("pack", _currentAreaStats.CurrentPackSize, FormatAverage(_sessionStats.AverageFinalPackSize), textColor, valueColor));
+
+        if (settings.ShowMoreCurrencyStats)
+            lines.Add(BuildSimpleModifierLine("cur", _currentAreaStats.CurrentMoreCurrency, FormatAverage(_sessionStats.AverageFinalMoreCurrency), textColor, valueColor));
+
+        if (settings.ShowMoreScarabsStats)
+            lines.Add(BuildSimpleModifierLine("scarb", _currentAreaStats.CurrentMoreScarabs, FormatAverage(_sessionStats.AverageFinalMoreScarabs), textColor, valueColor));
+
+        if (settings.ShowMoreMapsStats)
+            lines.Add(BuildSimpleModifierLine("map", _currentAreaStats.CurrentMoreMaps, FormatAverage(_sessionStats.AverageFinalMoreMaps), textColor, valueColor));
+
+        return lines;
+    }
+
+    private DisplayLine BuildItemModifierLine(string label, int currentValue, int deltaValue, string averageStartValue, string averageFinalValue, Color textColor, Color valueColor)
+    {
+        var segments = new List<DisplaySegment>
+        {
+            new($"{label}: ", textColor),
+            new(currentValue.ToString(CultureInfo.InvariantCulture), valueColor),
+            new(FormatSignedValue(deltaValue), deltaValue >= 0 ? Settings.TrackedDropWindow.SessionValueColor : new Color(220, 80, 80, 255))
+        };
+
+        if (!string.IsNullOrWhiteSpace(averageStartValue))
+        {
+            segments.Add(new("|", textColor));
+            segments.Add(new(averageStartValue, valueColor));
+        }
+
+        if (!string.IsNullOrWhiteSpace(averageFinalValue))
+        {
+            segments.Add(new("|", textColor));
+            segments.Add(new(averageFinalValue, valueColor));
+        }
+
+        return new DisplayLine(true, 1, segments.ToArray());
+    }
+
+    private static DisplayLine BuildSimpleModifierLine(string label, int currentValue, string averageValue, Color textColor, Color valueColor)
+    {
+        return new DisplayLine(true, 1,
+            new DisplaySegment($"{label}: ", textColor),
+            new DisplaySegment(currentValue.ToString(CultureInfo.InvariantCulture), valueColor),
+            new DisplaySegment("|", textColor),
+            new DisplaySegment(averageValue, valueColor));
+    }
+
+    private static string FormatSignedValue(int value)
+    {
+        return value >= 0
+            ? $"+{value.ToString(CultureInfo.InvariantCulture)}"
+            : value.ToString(CultureInfo.InvariantCulture);
+    }
+
     private static string FormatDuration(TimeSpan duration)
     {
         if (duration < TimeSpan.Zero)
@@ -500,11 +597,11 @@ public partial class MapDropStatistics
             windowRect.Width * (Settings.Display.Position.XPos / 100f),
             windowRect.Height * (Settings.Display.Position.YPos / 100f));
 
-        var columnLayout = BuildColumnLayout(lines);
+        var columnLayouts = BuildColumnLayouts(lines);
         var measuredLines = new List<(DisplayLine line, Vector2 size)>(lines.Count);
         foreach (var line in lines)
         {
-            var textSize = MeasureLine(line, columnLayout);
+            var textSize = MeasureLine(line, columnLayouts);
             measuredLines.Add((line, textSize));
         }
 
@@ -536,33 +633,31 @@ public partial class MapDropStatistics
             (int)ImDrawFlags.RoundCornersAll);
 
         foreach (var (line, position) in drawData)
-            DrawLine(line, position, columnLayout);
+            DrawLine(line, position, columnLayouts);
     }
 
-    private ColumnLayout BuildColumnLayout(List<DisplayLine> lines)
+    private Dictionary<int, ColumnLayout> BuildColumnLayouts(List<DisplayLine> lines)
     {
-        var labelWidth = 0f;
-        var value1Width = 0f;
-        var dividerWidth = 0f;
-        var value2Width = 0f;
-
-        foreach (var line in lines.Where(x => x.AlignColumns))
+        var layouts = new Dictionary<int, ColumnLayout>();
+        foreach (var group in lines.Where(x => x.AlignColumns).GroupBy(x => x.AlignmentGroup))
         {
-            if (line.Segments.Length < 4)
-                continue;
+            var maxColumns = group.Max(x => x.Segments.Length);
+            var widths = new float[maxColumns];
+            foreach (var line in group)
+            {
+                for (var index = 0; index < line.Segments.Length; index++)
+                    widths[index] = Math.Max(widths[index], MeasureText(line.Segments[index].Text).X + (index < line.Segments.Length - 1 ? 14f : 0f));
+            }
 
-            labelWidth = Math.Max(labelWidth, MeasureText(line.Segments[0].Text).X);
-            value1Width = Math.Max(value1Width, MeasureText(line.Segments[1].Text).X);
-            dividerWidth = Math.Max(dividerWidth, MeasureText(line.Segments[2].Text).X);
-            value2Width = Math.Max(value2Width, MeasureText(line.Segments[3].Text).X);
+            layouts[group.Key] = new ColumnLayout(widths);
         }
 
-        return new ColumnLayout(labelWidth, value1Width, dividerWidth, value2Width);
+        return layouts;
     }
 
-    private Vector2 MeasureLine(DisplayLine line, ColumnLayout layout)
+    private Vector2 MeasureLine(DisplayLine line, Dictionary<int, ColumnLayout> layouts)
     {
-        if (line.AlignColumns && line.Segments.Length >= 4)
+        if (line.AlignColumns && layouts.TryGetValue(line.AlignmentGroup, out var layout))
         {
             var height = line.Segments
                 .Select(x => MeasureText(x.Text).Y)
@@ -585,9 +680,9 @@ public partial class MapDropStatistics
         return new Vector2(totalWidth, maxHeight);
     }
 
-    private void DrawLine(DisplayLine line, Vector2 position, ColumnLayout layout)
+    private void DrawLine(DisplayLine line, Vector2 position, Dictionary<int, ColumnLayout> layouts)
     {
-        if (line.AlignColumns && line.Segments.Length >= 4)
+        if (line.AlignColumns && layouts.TryGetValue(line.AlignmentGroup, out var layout))
         {
             DrawAlignedLine(line, position, layout);
             return;
@@ -613,16 +708,11 @@ public partial class MapDropStatistics
     private void DrawAlignedLine(DisplayLine line, Vector2 position, ColumnLayout layout)
     {
         var currentX = position.X;
-        DrawTextSegment(line.Segments[0], new Vector2(currentX, position.Y));
-        currentX += layout.LabelWidth;
-
-        DrawTextSegment(line.Segments[1], new Vector2(currentX, position.Y));
-        currentX += layout.Value1Width;
-
-        DrawTextSegment(line.Segments[2], new Vector2(currentX, position.Y));
-        currentX += layout.DividerWidth;
-
-        DrawTextSegment(line.Segments[3], new Vector2(currentX, position.Y));
+        for (var index = 0; index < line.Segments.Length; index++)
+        {
+            DrawTextSegment(line.Segments[index], new Vector2(currentX, position.Y));
+            currentX += index < layout.ColumnWidths.Length ? layout.ColumnWidths[index] : MeasureText(line.Segments[index].Text).X;
+        }
     }
 
     private void DrawTextSegment(DisplaySegment segment, Vector2 position)

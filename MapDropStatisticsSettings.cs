@@ -71,6 +71,7 @@ public class DisplaySettings
     public PositionSettings Position { get; set; } = new();
     public VisualSettings Visuals { get; set; } = new();
     public VisibilitySettings Visibility { get; set; } = new();
+    public MapModifierDisplaySettings MapModifiers { get; set; } = new();
     public UIPanelSettings Panels { get; set; } = new();
 }
 
@@ -112,6 +113,21 @@ public class VisibilitySettings
     public ToggleNode ShowDivineOrbs { get; set; } = new(true);
     public ToggleNode ShowValdosBox { get; set; } = new(true);
     public ToggleNode ShowCustomTrackedItems { get; set; } = new(true);
+    public RangeNode<int> CustomTrackedItemMaxLabelLength { get; set; } = new(16, 8, 64);
+}
+
+[Submenu]
+public class MapModifierDisplaySettings
+{
+    public ToggleNode ShowBlockHeader { get; set; } = new(true);
+    public ToggleNode ShowItemRarityStats { get; set; } = new(true);
+    public ToggleNode ShowItemQuantityStats { get; set; } = new(true);
+    public ToggleNode ShowPackSizeStats { get; set; } = new(true);
+    public ToggleNode ShowMoreCurrencyStats { get; set; } = new(true);
+    public ToggleNode ShowMoreMapsStats { get; set; } = new(true);
+    public ToggleNode ShowMoreScarabsStats { get; set; } = new(true);
+    public ToggleNode ShowStartAverageForQuantityAndRarity { get; set; } = new(true);
+    public ToggleNode ShowFinalAverageForQuantityAndRarity { get; set; } = new(true);
 }
 
 [Submenu(CollapsedByDefault = true)]
