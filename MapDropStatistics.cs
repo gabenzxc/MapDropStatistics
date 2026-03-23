@@ -682,7 +682,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private void ResetSessionStats()
     {
         _sessionStats.Reset();
-        _trackedDropWindowStats.ResetAll();
         _appliedAreaReviews.Clear();
         _currentAreaStats.Reset();
         _seenPersistentItemKeys.Clear();
