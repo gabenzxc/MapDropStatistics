@@ -660,6 +660,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         }
 
         var isFailMap = _currentAreaStats.UniqueItems < Settings.Tracking.FailUniqueThreshold;
+        if (isFailMap && !IsSaveLockedArea(_currentAreaName))
+            _sessionStats.AddFail();
+
         var shouldCountInAverage = !IsSaveLockedArea(_currentAreaName) &&
                                    (!isFailMap || Settings.Tracking.CountFailMapToStatistic) &&
                                    (_currentAreaStats.HasDrops || Settings.Tracking.IncludeEmptyAreasInAverage);
@@ -695,9 +698,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         if (review == null)
             return;
-
-        if (review.IsFailMap)
-            _sessionStats.AddFail();
 
         _sessionStats.Add(review.Stats);
         _appliedAreaReviews.Add(review);
