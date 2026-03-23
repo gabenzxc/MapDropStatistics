@@ -344,8 +344,16 @@ public partial class MapDropStatistics
 
     private sealed class TrackedDropWindowStats
     {
+        public int TotalMaps { get; private set; }
+        public int SessionMaps { get; private set; }
         public Dictionary<string, int> TotalCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, int> SessionCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
+
+        public void AddMap()
+        {
+            TotalMaps++;
+            SessionMaps++;
+        }
 
         public void Add(string itemName, int quantity)
         {
@@ -363,17 +371,22 @@ public partial class MapDropStatistics
 
         public void ResetAll()
         {
+            TotalMaps = 0;
+            SessionMaps = 0;
             TotalCounts.Clear();
             SessionCounts.Clear();
         }
 
         public void ResetSession()
         {
+            SessionMaps = 0;
             SessionCounts.Clear();
         }
 
         public void Load(TrackedDropWindowSnapshot snapshot)
         {
+            TotalMaps = Math.Max(snapshot.TotalMaps, 0);
+            SessionMaps = Math.Max(snapshot.SessionMaps, 0);
             TotalCounts.Clear();
             SessionCounts.Clear();
 
@@ -462,6 +475,8 @@ public partial class MapDropStatistics
 
     private sealed class TrackedDropWindowSnapshot
     {
+        public int TotalMaps { get; set; }
+        public int SessionMaps { get; set; }
         public Dictionary<string, int> TotalCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
         public Dictionary<string, int> SessionCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
     }

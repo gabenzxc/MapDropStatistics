@@ -659,6 +659,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             LogError($"SaveAreaStatsToDisk failed: {ex}");
         }
 
+        if (!IsSaveLockedArea(_currentAreaName))
+            _trackedDropWindowStats.AddMap();
+
         var isFailMap = _currentAreaStats.UniqueItems < Settings.Tracking.FailUniqueThreshold;
         if (isFailMap && !IsSaveLockedArea(_currentAreaName))
             _sessionStats.AddFail();
@@ -764,6 +767,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 CustomTrackedTotals = new Dictionary<string, int>(_sessionStats.CustomTrackedTotals, StringComparer.InvariantCultureIgnoreCase),
                 TrackedDropWindow = new TrackedDropWindowSnapshot
                 {
+                    TotalMaps = _trackedDropWindowStats.TotalMaps,
+                    SessionMaps = _trackedDropWindowStats.SessionMaps,
                     TotalCounts = new Dictionary<string, int>(_trackedDropWindowStats.TotalCounts, StringComparer.InvariantCultureIgnoreCase),
                     SessionCounts = new Dictionary<string, int>(_trackedDropWindowStats.SessionCounts, StringComparer.InvariantCultureIgnoreCase)
                 },
