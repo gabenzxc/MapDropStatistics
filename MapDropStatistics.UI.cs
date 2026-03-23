@@ -71,7 +71,7 @@ public partial class MapDropStatistics
                 new DisplaySegment("Unique: ", textColor),
                 new DisplaySegment(_currentAreaStats.UniqueItems.ToString(CultureInfo.InvariantCulture), uniqueValueColor),
                 new DisplaySegment(" | ", textColor),
-                new DisplaySegment(FormatAverage(_sessionStats.AverageUniqueItems), uniqueValueColor)));
+                new DisplaySegment(FormatAverageCeiling(_sessionStats.AverageUniqueItems), uniqueValueColor)));
         }
 
         if (Settings.Display.Visibility.ShowT0Uniques)
@@ -90,7 +90,7 @@ public partial class MapDropStatistics
                 new DisplaySegment("Curr: ", textColor),
                 new DisplaySegment(_currentAreaStats.CurrencyQuantity.ToString(CultureInfo.InvariantCulture), textColor),
                 new DisplaySegment(" | ", textColor),
-                new DisplaySegment(FormatAverage(_sessionStats.AverageCurrencyQuantity), textColor)));
+                new DisplaySegment(FormatAverageCeiling(_sessionStats.AverageCurrencyQuantity), textColor)));
         }
 
         if (Settings.Display.Visibility.ShowDivineOrbs)
@@ -476,6 +476,11 @@ public partial class MapDropStatistics
         return value.ToString("0.##", CultureInfo.InvariantCulture);
     }
 
+    private static string FormatAverageCeiling(double value)
+    {
+        return Math.Ceiling(value).ToString("0", CultureInfo.InvariantCulture);
+    }
+
     private List<DisplayLine> BuildMapModifierLines(MapModifierDisplaySettings settings, Color textColor, Color valueColor)
     {
         var lines = new List<DisplayLine>();
@@ -486,8 +491,8 @@ public partial class MapDropStatistics
                 "ir",
                 _currentAreaStats.CurrentItemRarity,
                 _currentAreaStats.CurrentItemRarity - _currentAreaStats.StartItemRarity,
-                settings.ShowStartAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageStartItemRarity) : string.Empty,
-                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageFinalItemRarity) : string.Empty,
+                settings.ShowStartAverageForQuantityAndRarity ? FormatAverageCeiling(_sessionStats.AverageStartItemRarity) : string.Empty,
+                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverageCeiling(_sessionStats.AverageFinalItemRarity) : string.Empty,
                 textColor,
                 valueColor));
         }
@@ -498,23 +503,23 @@ public partial class MapDropStatistics
                 "iq",
                 _currentAreaStats.CurrentItemQuantity,
                 _currentAreaStats.CurrentItemQuantity - _currentAreaStats.StartItemQuantity,
-                settings.ShowStartAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageStartItemQuantity) : string.Empty,
-                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverage(_sessionStats.AverageFinalItemQuantity) : string.Empty,
+                settings.ShowStartAverageForQuantityAndRarity ? FormatAverageCeiling(_sessionStats.AverageStartItemQuantity) : string.Empty,
+                settings.ShowFinalAverageForQuantityAndRarity ? FormatAverageCeiling(_sessionStats.AverageFinalItemQuantity) : string.Empty,
                 textColor,
                 valueColor));
         }
 
         if (settings.ShowPackSizeStats)
-            lines.Add(BuildSimpleModifierLine("pack", _currentAreaStats.CurrentPackSize, FormatAverage(_sessionStats.AverageFinalPackSize), textColor, valueColor));
+            lines.Add(BuildSimpleModifierLine("pack", _currentAreaStats.CurrentPackSize, FormatAverageCeiling(_sessionStats.AverageFinalPackSize), textColor, valueColor));
 
         if (settings.ShowMoreCurrencyStats)
-            lines.Add(BuildSimpleModifierLine("cur", _currentAreaStats.CurrentMoreCurrency, FormatAverage(_sessionStats.AverageFinalMoreCurrency), textColor, valueColor));
+            lines.Add(BuildSimpleModifierLine("cur", _currentAreaStats.CurrentMoreCurrency, FormatAverageCeiling(_sessionStats.AverageFinalMoreCurrency), textColor, valueColor));
 
         if (settings.ShowMoreScarabsStats)
-            lines.Add(BuildSimpleModifierLine("scarb", _currentAreaStats.CurrentMoreScarabs, FormatAverage(_sessionStats.AverageFinalMoreScarabs), textColor, valueColor));
+            lines.Add(BuildSimpleModifierLine("scarb", _currentAreaStats.CurrentMoreScarabs, FormatAverageCeiling(_sessionStats.AverageFinalMoreScarabs), textColor, valueColor));
 
         if (settings.ShowMoreMapsStats)
-            lines.Add(BuildSimpleModifierLine("map", _currentAreaStats.CurrentMoreMaps, FormatAverage(_sessionStats.AverageFinalMoreMaps), textColor, valueColor));
+            lines.Add(BuildSimpleModifierLine("map", _currentAreaStats.CurrentMoreMaps, FormatAverageCeiling(_sessionStats.AverageFinalMoreMaps), textColor, valueColor));
 
         return lines;
     }
