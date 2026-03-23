@@ -34,6 +34,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private readonly Dictionary<long, PendingDropInfo> _pendingDropKeys = [];
     private readonly AreaLootStats _currentAreaStats = new();
     private readonly SessionLootStats _sessionStats = new();
+    private readonly TrackedDropWindowStats _trackedDropWindowStats = new();
     private readonly List<AreaReview> _appliedAreaReviews = [];
     private readonly List<string> _savedMapStatFiles = [];
     private HashSet<string> _t0UniqueNames = new(StringComparer.InvariantCultureIgnoreCase);
@@ -65,6 +66,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             Settings.Actions.ClearSavedMapStats.OnPressed += ClearSavedMapStats;
             Settings.Actions.LoadLastSession.OnPressed += LoadLastSessionSnapshot;
             EnsureCustomTrackedItemDefaults();
+            EnsureTrackedDropWindowDefaults();
             _t0UniqueNames = LoadT0UniqueNames();
             _uniqueArtMapping = LoadUniqueArtMapping();
             RefreshSavedMapStats();
@@ -135,10 +137,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (!ShouldDraw())
                 return;
 
-            if (!_trackingCurrentArea && !Settings.Tracking.ShowWhenNotTrackingArea)
-                return;
+            if (_trackingCurrentArea || Settings.Tracking.ShowWhenNotTrackingArea)
+                DrawOverlay(BuildLines());
 
-            DrawOverlay(BuildLines());
+            DrawTrackedDropWindow();
         }
         catch (Exception ex)
         {
@@ -279,6 +281,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 {
                     CountFragmentDrop(baseItemType.BaseName, 1);
                     CountCustomTrackedItem(baseItemType.BaseName, 1);
+                    CountTrackedDropWindowItem(baseItemType.BaseName, 1);
                 }
 
                 SavePending(dropKey, persistentItemKey, worldEntity, itemEntity, "fragment_stack_missing", ProvisionalCategoryFragment, 1, baseItemType.BaseName);
@@ -288,6 +291,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             var quantity = Math.Max(fragmentStack.Size, 1);
             CountFragmentDrop(baseItemType.BaseName, quantity);
             CountCustomTrackedItem(baseItemType.BaseName, quantity);
+            CountTrackedDropWindowItem(baseItemType.BaseName, quantity);
 
             _seenPersistentItemKeys.Add(persistentItemKey);
             _pendingDropKeys.Remove(dropKey);
@@ -302,6 +306,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 {
                     CountCurrencyDrop(baseItemType.BaseName, 1);
                     CountCustomTrackedItem(baseItemType.BaseName, 1);
+                    CountTrackedDropWindowItem(baseItemType.BaseName, 1);
                 }
 
                 SavePending(dropKey, persistentItemKey, worldEntity, itemEntity, "currency_stack_missing", ProvisionalCategoryCurrency, 1, baseItemType.BaseName);
@@ -311,6 +316,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             var quantity = Math.Max(stack.Size, 1);
             CountCurrencyDrop(baseItemType.BaseName, quantity);
             CountCustomTrackedItem(baseItemType.BaseName, quantity);
+            CountTrackedDropWindowItem(baseItemType.BaseName, quantity);
 
             _seenPersistentItemKeys.Add(persistentItemKey);
             _pendingDropKeys.Remove(dropKey);
@@ -329,8 +335,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             _currentAreaStats.UniqueItems++;
             _currentAreaStats.AddDrop($"Unique::{uniqueName}", 1);
             CountCustomTrackedItem(uniqueName, 1);
+            var isT0Unique = IsT0Unique(uniqueName);
+            CountTrackedDropWindowItem(uniqueName, 1, isT0Unique);
 
-            if (IsT0Unique(uniqueName))
+            if (isT0Unique)
             {
                 _currentAreaStats.T0UniqueItems++;
                 _currentAreaStats.LastT0UniqueName = uniqueName;
@@ -340,6 +348,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         {
             CountGearBaseDrop(itemEntity, baseItemType, mods.ItemRarity);
             CountCustomTrackedItem(baseItemType.BaseName, 1);
+            CountTrackedDropWindowItem(baseItemType.BaseName, 1);
         }
 
         _seenPersistentItemKeys.Add(persistentItemKey);
@@ -363,6 +372,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             var quantity = Math.Max(stack.Size, 1);
             CountCurrencyDrop(baseName, quantity);
             CountCustomTrackedItem(baseName, quantity);
+            CountTrackedDropWindowItem(baseName, quantity);
             _seenPersistentItemKeys.Add(persistentItemKey);
             _pendingDropKeys.Remove(dropKey);
             return true;
@@ -372,6 +382,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         {
             CountCurrencyDrop(baseName, 1);
             CountCustomTrackedItem(baseName, 1);
+            CountTrackedDropWindowItem(baseName, 1);
         }
 
         SavePending(dropKey, persistentItemKey, worldEntity, itemEntity, "known_currency_stack_missing", ProvisionalCategoryCurrency, 1, baseName);
@@ -424,6 +435,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                     }
 
                     CountCustomTrackedItem(pending.BaseName, delta);
+                    CountTrackedDropWindowItem(pending.BaseName, delta);
                 }
 
                 _seenPersistentItemKeys.Add(pending.PersistentItemKey);
@@ -549,6 +561,35 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             Settings.Tracking.CustomTrackedCurrencyItems.Content.Add(new TextNode("Sacred Orb"));
     }
 
+    private void EnsureTrackedDropWindowDefaults()
+    {
+        if (Settings.TrackedDropWindow.CustomTrackedItems.Content.Count == 0)
+            Settings.TrackedDropWindow.CustomTrackedItems.Content.Add(new TextNode("Sacred Orb"));
+    }
+
+    private IReadOnlyList<string> GetConfiguredTrackedDropWindowItems()
+    {
+        return (Settings.TrackedDropWindow.CustomTrackedItems.Content ?? [])
+            .Select(x => x?.Value?.Trim() ?? string.Empty)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.InvariantCultureIgnoreCase)
+            .ToArray();
+    }
+
+    private void CountTrackedDropWindowItem(string itemName, int quantity, bool isT0Unique = false)
+    {
+        if (string.IsNullOrWhiteSpace(itemName) || quantity <= 0)
+            return;
+
+        if (!isT0Unique &&
+            !GetConfiguredTrackedDropWindowItems().Contains(itemName, StringComparer.InvariantCultureIgnoreCase))
+        {
+            return;
+        }
+
+        _trackedDropWindowStats.Add(itemName, quantity);
+    }
+
     private int GetCurrentTrackedItemCount(string itemName)
     {
         return _currentAreaStats.CustomTrackedCounts.TryGetValue(itemName, out var quantity)
@@ -585,6 +626,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         var name = area.Name ?? string.Empty;
         return !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
+    }
+
+    private bool IsInHideout()
+    {
+        return GameController?.Area?.CurrentArea?.IsHideout == true;
     }
 
     private static string GetAreaKey(AreaInstance area)
@@ -633,6 +679,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private void ResetSessionStats()
     {
         _sessionStats.Reset();
+        _trackedDropWindowStats.ResetAll();
         _appliedAreaReviews.Clear();
         _currentAreaStats.Reset();
         _seenPersistentItemKeys.Clear();
@@ -716,6 +763,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 TotalMapTimeTicks = _sessionStats.TotalMapTime.Ticks,
                 TotalNonMapTimeTicks = (_sessionStats.TotalNonMapTime + _sessionStats.CurrentNonMapElapsed).Ticks,
                 CustomTrackedTotals = new Dictionary<string, int>(_sessionStats.CustomTrackedTotals, StringComparer.InvariantCultureIgnoreCase),
+                TrackedDropWindow = new TrackedDropWindowSnapshot
+                {
+                    TotalCounts = new Dictionary<string, int>(_trackedDropWindowStats.TotalCounts, StringComparer.InvariantCultureIgnoreCase),
+                    SessionCounts = new Dictionary<string, int>(_trackedDropWindowStats.SessionCounts, StringComparer.InvariantCultureIgnoreCase)
+                },
                 AppliedAreaReviews = _appliedAreaReviews
                     .Select(x => AreaReviewSnapshot.FromReview(x))
                     .ToList()
@@ -748,6 +800,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 _appliedAreaReviews.Add(review.ToReview());
 
             _sessionStats.Load(snapshot);
+            _trackedDropWindowStats.Load(snapshot.TrackedDropWindow ?? new TrackedDropWindowSnapshot());
             RefreshSessionLastT0UniqueName();
         }
         catch (Exception ex)

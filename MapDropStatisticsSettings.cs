@@ -10,6 +10,7 @@ public class MapDropStatisticsSettings : ISettings
     public ToggleNode Enable { get; set; } = new(false);
     public DisplaySettings Display { get; set; } = new();
     public TrackingSettings Tracking { get; set; } = new();
+    public TrackedDropWindowSettings TrackedDropWindow { get; set; } = new();
     public ActionSettings Actions { get; set; } = new();
     public DebugSettings Debug { get; set; } = new();
 }
@@ -22,6 +23,22 @@ public class TrackingSettings
     public RangeNode<int> FailUniqueThreshold { get; set; } = new(1000, 0, 20000);
     public ToggleNode CountFailMapToStatistic { get; set; } = new(true);
     public ContentNode<TextNode> CustomTrackedCurrencyItems { get; set; } = new()
+    {
+        EnableControls = true,
+        UseFlatItems = true,
+        ItemFactory = () => new TextNode("")
+    };
+}
+
+[Submenu]
+public class TrackedDropWindowSettings
+{
+    public ToggleNode Enable { get; set; } = new(true);
+    public ToggleNode ShowInHideoutOnly { get; set; } = new(true);
+    public ToggleNode ShowHeader { get; set; } = new(true);
+    public RangeNode<int> MaxLabelLength { get; set; } = new(24, 8, 64);
+    public ColorNode SessionValueColor { get; set; } = new(new Color(120, 220, 120, 255));
+    public ContentNode<TextNode> CustomTrackedItems { get; set; } = new()
     {
         EnableControls = true,
         UseFlatItems = true,

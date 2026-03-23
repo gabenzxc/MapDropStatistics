@@ -205,6 +205,99 @@ public partial class MapDropStatistics
         }
     }
 
+    private void DrawTrackedDropWindow()
+    {
+        if (!Settings.TrackedDropWindow.Enable)
+            return;
+
+        if (Settings.TrackedDropWindow.ShowInHideoutOnly && !IsInHideout())
+            return;
+
+        var t0Entries = GetTrackedDropWindowEntries(isT0Group: true);
+        var customEntries = GetTrackedDropWindowEntries(isT0Group: false);
+        if (t0Entries.Count == 0 && customEntries.Count == 0)
+            return;
+
+        ImGui.SetNextWindowBgAlpha(Settings.Display.Visuals.BackgroundColor.Value.A / 255f);
+        ImGui.SetNextWindowSize(new Vector2(320, 0), ImGuiCond.FirstUseEver);
+
+        var windowFlags = ImGuiWindowFlags.AlwaysAutoResize;
+        if (!ImGui.Begin("Tracked T0 Drops##MapDropStatistics", windowFlags))
+        {
+            ImGui.End();
+            return;
+        }
+
+        if (Settings.TrackedDropWindow.ShowHeader)
+            ImGui.TextColored(ToVector4(Settings.Display.Visuals.HeaderColor), "Tracked T0 / Custom Drops");
+
+        if (ImGui.Button("Reset All"))
+            ResetTrackedDropWindowAllStats();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Reset Session"))
+            ResetTrackedDropWindowSessionStats();
+
+        DrawTrackedDropWindowGroup("T0 uniques", t0Entries);
+        DrawTrackedDropWindowGroup("Custom items", customEntries);
+
+        ImGui.End();
+    }
+
+    private List<(string itemName, int totalCount, int sessionCount)> GetTrackedDropWindowEntries(bool isT0Group)
+    {
+        return _trackedDropWindowStats.TotalCounts
+            .Where(x => x.Value > 0 && IsT0Unique(x.Key) == isT0Group)
+            .Select(x => (
+                itemName: x.Key,
+                totalCount: x.Value,
+                sessionCount: _trackedDropWindowStats.SessionCounts.TryGetValue(x.Key, out var sessionCount) ? sessionCount : 0))
+            .OrderByDescending(x => x.totalCount)
+            .ThenBy(x => x.itemName, StringComparer.InvariantCultureIgnoreCase)
+            .ToList();
+    }
+
+    private void DrawTrackedDropWindowGroup(string groupName, List<(string itemName, int totalCount, int sessionCount)> entries)
+    {
+        if (entries.Count == 0)
+            return;
+
+        ImGui.Separator();
+        ImGui.TextColored(ToVector4(Settings.Display.Visuals.HeaderColor), groupName);
+
+        foreach (var (itemName, totalCount, sessionCount) in entries)
+        {
+            ImGui.TextColored(ToVector4(Settings.Display.Visuals.TextColor), TruncateDisplayName(itemName, Settings.TrackedDropWindow.MaxLabelLength));
+            ImGui.SameLine();
+            ImGui.TextColored(ToVector4(Settings.Display.Visuals.CurrencyValueColor), totalCount.ToString(CultureInfo.InvariantCulture));
+            ImGui.SameLine();
+            ImGui.TextColored(ToVector4(Settings.Display.Visuals.TextColor), "|");
+            ImGui.SameLine();
+            ImGui.TextColored(ToVector4(Settings.TrackedDropWindow.SessionValueColor), $"+{sessionCount.ToString(CultureInfo.InvariantCulture)}");
+        }
+    }
+
+    private void ResetTrackedDropWindowAllStats()
+    {
+        _trackedDropWindowStats.ResetAll();
+        SaveSessionSnapshot();
+    }
+
+    private void ResetTrackedDropWindowSessionStats()
+    {
+        _trackedDropWindowStats.ResetSession();
+        SaveSessionSnapshot();
+    }
+
+    private static System.Numerics.Vector4 ToVector4(Color color)
+    {
+        return new System.Numerics.Vector4(
+            color.R / 255f,
+            color.G / 255f,
+            color.B / 255f,
+            color.A / 255f);
+    }
+
     private void DrawSavedMapStatsFileList()
     {
         var opened = ImGui.BeginChild("SavedMapStatsFiles");

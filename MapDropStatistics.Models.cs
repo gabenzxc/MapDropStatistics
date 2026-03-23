@@ -342,6 +342,55 @@ public partial class MapDropStatistics
         }
     }
 
+    private sealed class TrackedDropWindowStats
+    {
+        public Dictionary<string, int> TotalCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
+        public Dictionary<string, int> SessionCounts { get; } = new(StringComparer.InvariantCultureIgnoreCase);
+
+        public void Add(string itemName, int quantity)
+        {
+            if (string.IsNullOrWhiteSpace(itemName) || quantity <= 0)
+                return;
+
+            TotalCounts[itemName] = TotalCounts.TryGetValue(itemName, out var totalExisting)
+                ? totalExisting + quantity
+                : quantity;
+
+            SessionCounts[itemName] = SessionCounts.TryGetValue(itemName, out var sessionExisting)
+                ? sessionExisting + quantity
+                : quantity;
+        }
+
+        public void ResetAll()
+        {
+            TotalCounts.Clear();
+            SessionCounts.Clear();
+        }
+
+        public void ResetSession()
+        {
+            SessionCounts.Clear();
+        }
+
+        public void Load(TrackedDropWindowSnapshot snapshot)
+        {
+            TotalCounts.Clear();
+            SessionCounts.Clear();
+
+            foreach (var (itemName, quantity) in snapshot.TotalCounts ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(itemName) && quantity > 0)
+                    TotalCounts[itemName] = quantity;
+            }
+
+            foreach (var (itemName, quantity) in snapshot.SessionCounts ?? new Dictionary<string, int>(StringComparer.InvariantCultureIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(itemName) && quantity > 0)
+                    SessionCounts[itemName] = quantity;
+            }
+        }
+    }
+
     private sealed class PendingDropInfo
     {
         public long DropKey { get; set; }
@@ -407,7 +456,14 @@ public partial class MapDropStatistics
         public long TotalMapTimeTicks { get; set; }
         public long TotalNonMapTimeTicks { get; set; }
         public Dictionary<string, int> CustomTrackedTotals { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
+        public TrackedDropWindowSnapshot TrackedDropWindow { get; set; } = new();
         public List<AreaReviewSnapshot> AppliedAreaReviews { get; set; } = [];
+    }
+
+    private sealed class TrackedDropWindowSnapshot
+    {
+        public Dictionary<string, int> TotalCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
+        public Dictionary<string, int> SessionCounts { get; set; } = new(StringComparer.InvariantCultureIgnoreCase);
     }
 
     private readonly record struct DisplaySegment(string Text, Color Color);
