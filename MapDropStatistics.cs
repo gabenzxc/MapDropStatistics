@@ -347,6 +347,19 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
         }
 
+        // Check if this is a tracked gem before ignoring all gems
+        if (IsGem(itemEntity.Path, baseItemType))
+        {
+            if (IsCustomTrackedItem(baseItemType.BaseName))
+            {
+                CountCustomTrackedItem(baseItemType.BaseName, 1);
+                CountTrackedDropWindowItem(baseItemType.BaseName, 1);
+                _seenPersistentItemKeys.Add(persistentItemKey);
+                _pendingDropKeys.Remove(dropKey);
+                return;
+            }
+        }
+
         if (ShouldIgnoreItem(itemEntity.Path, baseItemType))
         {
             _seenPersistentItemKeys.Add(persistentItemKey);
@@ -619,6 +632,24 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         return itemEntity?.HasComponent<Weapon>() == true ||
                itemEntity?.HasComponent<Armour>() == true ||
                className is "Quiver" or "Ring" or "Amulet" or "Belt" or "Jewel" or "AbyssJewel";
+    }
+
+    private static bool IsGem(string path, BaseItemType baseItemType)
+    {
+        if (!string.IsNullOrEmpty(path) && path.StartsWith("Metadata/Items/Gems/", StringComparison.Ordinal))
+            return true;
+
+        var className = baseItemType.ClassName ?? string.Empty;
+        return className.Contains("Gem", StringComparison.InvariantCultureIgnoreCase);
+    }
+
+    private bool IsCustomTrackedItem(string itemName)
+    {
+        if (string.IsNullOrWhiteSpace(itemName))
+            return false;
+
+        return GetConfiguredCustomTrackedItems().Contains(itemName, StringComparer.InvariantCultureIgnoreCase) ||
+               GetConfiguredTrackedDropWindowItems().Contains(itemName, StringComparer.InvariantCultureIgnoreCase);
     }
 
     private void CountCustomTrackedItem(string itemName, int quantity)
