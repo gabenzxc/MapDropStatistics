@@ -81,7 +81,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private string _savedMapStatsFilter = string.Empty;
     private AreaDump _selectedAreaDump;
     private bool _trackingCurrentArea;
+    private bool _hasPausedTrackableArea;
     private bool _hasLastKnownMapModifierSnapshot;
+    private bool _pendingResumeFingerprintValidation;
     private int _lastAreaChangeCount = -1;
     private long _nextPendingRetryTick;
     private long _nextSessionSnapshotTick;
@@ -92,6 +94,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private int _pendingRetryAttempts;
     private bool _wasInGameLastTick;
     private MapModifierSnapshot _lastKnownMapModifierSnapshot;
+    private MapModifierSnapshot _expectedResumeMapModifierSnapshot;
 
     public override bool Initialise()
     {
@@ -139,6 +142,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         try
         {
             if (!_trackingCurrentArea || entity?.IsValid != true || GameController?.Files?.BaseItemTypes == null)
+                return;
+
+            if (!ValidatePendingResumeFingerprintIfReady() && _pendingResumeFingerprintValidation)
                 return;
 
             if (!entity.TryGetComponent<WorldItem>(out var worldItem))
@@ -243,6 +249,15 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         var liveAreaKey = GetAreaKey(liveArea);
         var liveAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
 
+        if (!_trackingCurrentArea && _hasPausedTrackableArea && !IsTrackableArea(liveArea))
+        {
+            if (!_isInNonMapArea)
+                StartNonMapAreaSegment();
+
+            _lastAreaChangeCount = liveAreaChangeCount;
+            return;
+        }
+
         if (liveAreaChangeCount != _lastAreaChangeCount)
         {
             HandleAreaTransition(liveArea);
@@ -262,7 +277,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         var nextAreaKey = GetAreaKey(area);
         var nextIsTrackable = IsTrackableArea(area);
 
-        if (!string.IsNullOrEmpty(_currentAreaKey) && string.Equals(_currentAreaKey, nextAreaKey, StringComparison.Ordinal))
+        if (_trackingCurrentArea &&
+            !string.IsNullOrEmpty(_currentAreaKey) &&
+            string.Equals(_currentAreaKey, nextAreaKey, StringComparison.Ordinal))
         {
             _currentAreaName = area?.Name ?? _currentAreaName;
             _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
@@ -271,18 +288,51 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         if (!_trackingCurrentArea)
         {
+            if (!nextIsTrackable)
+            {
+                StartNonMapAreaSegment();
+                _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
+                return;
+            }
+
+            if (_hasPausedTrackableArea)
+            {
+                var readResult = ReadCurrentMapModifierSnapshot();
+                if (HasSameMapModifierFingerprint(readResult))
+                {
+                    ResumePausedArea(area);
+                    return;
+                }
+
+                if (_hasLastKnownMapModifierSnapshot && readResult.MatchedStatsCount == 0)
+                {
+                    ResumePausedArea(area, validateFingerprintWhenReady: true);
+                    return;
+                }
+
+                FinalizeCurrentArea();
+            }
+
             StartTrackingArea(area, resetStats: true);
             return;
         }
 
         if (nextIsTrackable)
         {
-            StartTrackingArea(area, resetStats: false);
+            if (CanContinueCurrentArea(area))
+            {
+                ResumePausedArea(area);
+                return;
+            }
+
+            FinalizeCurrentArea();
+            StartTrackingArea(area, resetStats: true);
             return;
         }
 
-        FinalizeCurrentArea();
-        StartTrackingArea(area, resetStats: false);
+        PauseCurrentArea();
+        StartNonMapAreaSegment();
+        _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
     }
 
     private void TryProcessDrop(long dropKey, string persistentItemKey, Entity worldEntity, Entity itemEntity)
@@ -640,14 +690,15 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         UpdateLiveTimers();
 
-        _seenPersistentItemKeys.Clear();
-        _pendingDropKeys.Clear();
-
         if (resetStats)
         {
+            _seenPersistentItemKeys.Clear();
+            _pendingDropKeys.Clear();
             _currentAreaStats.Reset();
             _hasLastKnownMapModifierSnapshot = false;
             _lastKnownMapModifierSnapshot = default;
+            _pendingResumeFingerprintValidation = false;
+            _expectedResumeMapModifierSnapshot = default;
         }
 
         _nextPendingRetryTick = 0;
@@ -655,12 +706,86 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _currentAreaName = area?.Name ?? "Unknown area";
         _currentAreaKey = GetAreaKey(area);
         _trackingCurrentArea = IsTrackableArea(area);
+        _hasPausedTrackableArea = false;
         _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
         _currentAreaStartedUtc = DateTime.UtcNow;
         _isInNonMapArea = !_trackingCurrentArea;
         _nonMapAreaStartedUtc = _isInNonMapArea ? DateTime.UtcNow : default;
         UpdateCurrentAreaMapModifierStats(captureAsStart: _trackingCurrentArea && resetStats);
         ResetDebugCounters();
+    }
+
+    private void PauseCurrentArea()
+    {
+        if (!_trackingCurrentArea)
+            return;
+
+        UpdateLiveTimers();
+        UpdateCurrentAreaMapModifierStats();
+        _pendingDropKeys.Clear();
+        _trackingCurrentArea = false;
+        _hasPausedTrackableArea = true;
+    }
+
+    private void ResumePausedArea(AreaInstance area, bool validateFingerprintWhenReady = false)
+    {
+        var expectedSnapshot = _lastKnownMapModifierSnapshot;
+
+        _currentAreaName = area?.Name ?? _currentAreaName;
+        _currentAreaKey = GetAreaKey(area);
+        _trackingCurrentArea = true;
+        _hasPausedTrackableArea = false;
+        _pendingResumeFingerprintValidation = validateFingerprintWhenReady;
+        _expectedResumeMapModifierSnapshot = validateFingerprintWhenReady ? expectedSnapshot : default;
+        _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
+        _currentAreaStartedUtc = DateTime.UtcNow - _currentAreaStats.Elapsed;
+        _isInNonMapArea = false;
+        _nonMapAreaStartedUtc = default;
+        _nextPendingRetryTick = 0;
+        UpdateCurrentAreaMapModifierStats();
+        ResetDebugCounters();
+    }
+
+    private void StartNonMapAreaSegment()
+    {
+        if (!_isInNonMapArea)
+        {
+            _isInNonMapArea = true;
+            _nonMapAreaStartedUtc = DateTime.UtcNow;
+        }
+
+        _sessionStats.CurrentNonMapElapsed = DateTime.UtcNow - _nonMapAreaStartedUtc;
+    }
+
+    private bool CanContinueCurrentArea(AreaInstance area)
+    {
+        if (!_trackingCurrentArea || !IsTrackableArea(area))
+            return false;
+
+        return HasSameMapModifierFingerprint(ReadCurrentMapModifierSnapshot());
+    }
+
+    private bool CanContinuePausedArea(AreaInstance area)
+    {
+        if (!_hasPausedTrackableArea || !IsTrackableArea(area))
+            return false;
+
+        return HasSameMapModifierFingerprint(ReadCurrentMapModifierSnapshot());
+    }
+
+    private bool HasSameMapModifierFingerprint(MapModifierReadResult readResult)
+    {
+        return _hasLastKnownMapModifierSnapshot &&
+               readResult.MatchedStatsCount > 0 &&
+               _lastKnownMapModifierSnapshot.Equals(readResult.Snapshot);
+    }
+
+    private bool ValidatePendingResumeFingerprintIfReady()
+    {
+        if (!_pendingResumeFingerprintValidation)
+            return true;
+
+        return ValidatePendingResumeFingerprint(ReadCurrentMapModifierSnapshot());
     }
 
     private static bool IsTrackableArea(AreaInstance area)
@@ -689,7 +814,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
     private void FinalizeCurrentArea()
     {
-        if (!_trackingCurrentArea)
+        if (!_trackingCurrentArea && !_hasPausedTrackableArea)
             return;
 
         UpdateLiveTimers();
@@ -725,6 +850,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         }
 
         SaveSessionSnapshot();
+        _hasPausedTrackableArea = false;
     }
 
     private void ResetSessionStats()
@@ -732,8 +858,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.Reset();
         _appliedAreaReviews.Clear();
         _currentAreaStats.Reset();
+        _hasPausedTrackableArea = false;
         _hasLastKnownMapModifierSnapshot = false;
         _lastKnownMapModifierSnapshot = default;
+        _pendingResumeFingerprintValidation = false;
+        _expectedResumeMapModifierSnapshot = default;
         _seenPersistentItemKeys.Clear();
         _pendingDropKeys.Clear();
         _currentAreaStartedUtc = DateTime.UtcNow;
@@ -885,6 +1014,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         {
             _sessionStats.AddNonMapTime(DateTime.UtcNow - _nonMapAreaStartedUtc);
             _sessionStats.CurrentNonMapElapsed = TimeSpan.Zero;
+            _isInNonMapArea = false;
+            _nonMapAreaStartedUtc = default;
             SaveSessionSnapshot();
         }
     }
@@ -908,6 +1039,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
 
         var readResult = ReadCurrentMapModifierSnapshot();
+        if (!ValidatePendingResumeFingerprint(readResult))
+            return;
+
         if (readResult.MatchedStatsCount > 0)
         {
             _lastKnownMapModifierSnapshot = readResult.Snapshot;
@@ -938,6 +1072,26 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _currentAreaStats.FinalMoreCurrency = snapshot.MoreCurrency;
         _currentAreaStats.FinalMoreMaps = snapshot.MoreMaps;
         _currentAreaStats.FinalMoreScarabs = snapshot.MoreScarabs;
+    }
+
+    private bool ValidatePendingResumeFingerprint(MapModifierReadResult readResult)
+    {
+        if (!_pendingResumeFingerprintValidation)
+            return true;
+
+        if (readResult.MatchedStatsCount == 0)
+            return false;
+
+        _pendingResumeFingerprintValidation = false;
+        var expectedSnapshot = _expectedResumeMapModifierSnapshot;
+        _expectedResumeMapModifierSnapshot = default;
+
+        if (expectedSnapshot.Equals(readResult.Snapshot))
+            return true;
+
+        FinalizeCurrentArea();
+        StartTrackingArea(GameController?.Area?.CurrentArea, resetStats: true);
+        return false;
     }
 
     private void CommitFinalMapModifierStats()
