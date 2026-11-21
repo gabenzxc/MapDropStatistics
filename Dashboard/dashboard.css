@@ -350,6 +350,7 @@ td small { display: block; color: var(--muted); font-size: .8rem; }
 .altar-stat-title { margin-top: 12px; }
 .form-status { color: var(--red); font-size: .88rem; }
 .form-status:empty { display: none; }
+#price-archive-path { display: block; overflow-wrap: anywhere; user-select: all; }
 dialog { max-width: min(92vw, 430px); width: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); padding: 20px; }
 dialog::backdrop { background: #0a0c0acc; }
 dialog form { display: grid; gap: 11px; }

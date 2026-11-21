@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using ExileCore;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared;
 using ExileCore.Shared.Enums;
 
 namespace MapDropStatistics;
@@ -39,8 +40,14 @@ public partial class MapDropStatistics
     private Dictionary<LootKey, int> _inventoryCounts;
     private List<PartyObservation> _partyInArea = [];
     private readonly HashSet<string> _deadPartyMembers = new(StringComparer.OrdinalIgnoreCase);
-    private NinjaPriceCache _market;
-    private Task<NinjaPriceCache> _marketRead;
+    private MarketPriceArchive _priceArchive;
+    private volatile PricingSourceStatus _pricingStatus;
+    private long _nextPricingStatusRead;
+    private MarketPriceSnapshot _market;
+    private Task<MarketPriceSnapshot> _marketRead;
+    private Task<MarketPriceSnapshot> _scheduledMarketRead;
+    private string _scheduledMarketLeague;
+    private long _nextMarketCapture;
 
     private sealed record LootKey(string Path, string Name, string Category, int? MapTier = null, string UniqueType = null);
     private sealed record GroundDrop(LootKey Key, int Quantity, Vector2 Position, long Address);
@@ -60,6 +67,9 @@ public partial class MapDropStatistics
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             _history = new MapHistory(Path.Combine(root, "MapHistory"), message => LogError(message), beltNames,
                 IsT0Unique, GetWidgetDefaults(), uniqueTypes);
+            _priceArchive = new MarketPriceArchive(Path.Combine(root, "MarketPrices"), GetPricerCacheRoot,
+                message => LogError(message));
+            UpdatePricingStatus();
             ImportLegacyMapStats();
             FillSavedMarketPrices();
             Input.RegisterKey(System.Windows.Forms.Keys.LButton);
@@ -163,19 +173,13 @@ public partial class MapDropStatistics
 
     private void FillSavedMarketPrices()
     {
-        var cacheRoot = GetPricerCacheRoot();
+        var archive = _priceArchive;
         var history = _history;
         _ = Task.Run(() =>
         {
             try
             {
-                var prices = new Dictionary<string, NinjaPriceCache>(StringComparer.OrdinalIgnoreCase);
-                history.FillMarketPrices(league =>
-                {
-                    if (!prices.TryGetValue(league, out var price))
-                        prices[league] = price = NinjaPriceCache.Load(cacheRoot, league);
-                    return price;
-                });
+                history.FillMarketPrices(archive, DateTime.UtcNow);
             }
             catch (Exception ex)
             {
@@ -194,7 +198,7 @@ public partial class MapDropStatistics
         _dashboard?.Dispose();
         var pricerCacheRoot = GetPricerCacheRoot();
         _dashboard = port == 0 ? null : new DashboardServer(port, _history, message => LogError(message),
-            new NinjaItemIcons(pricerCacheRoot), pricerCacheRoot);
+            new NinjaItemIcons(pricerCacheRoot), () => _pricingStatus);
     }
 
     private void OpenDashboard()
@@ -256,7 +260,12 @@ public partial class MapDropStatistics
         _mapHash = area?.Hash ?? 0;
         _mapInstanceId = area?.InstanceId ?? 0;
         _activeRun = _trackingCurrentArea && _history != null
-            ? new MapRun { Name = _currentAreaName, StartedUtc = DateTime.UtcNow, Altars = [], SessionId = _history.ActiveSessionId, TracksUniqueBelts = true }
+            ? new MapRun
+            {
+                Name = _currentAreaName, StartedUtc = DateTime.UtcNow, Altars = [], SessionId = _history.ActiveSessionId,
+                TracksUniqueBelts = true,
+                Pricing = new MapPricing(_history.DefaultMapPriceDivine, SnapshotWindowHours: MarketPriceArchive.WindowHours)
+            }
             : null;
         _seenAltars.Clear();
         _recordedEncounterSignals.Clear();
@@ -616,31 +625,115 @@ public partial class MapDropStatistics
             _inventoryGains.Remove(key);
     }
 
+    private void CaptureMarketSnapshot()
+    {
+        var tick = Environment.TickCount64;
+        if (_priceArchive == null || tick < _nextMarketCapture || _scheduledMarketRead is { IsCompleted: false })
+            return;
+
+        _nextMarketCapture = tick + 60000;
+        var league = GameController.IngameState?.ServerData?.League;
+        var nowUtc = DateTime.UtcNow;
+        if (!NinjaPriceCache.IsValidLeague(league) ||
+            (_scheduledMarketRead is { IsCompletedSuccessfully: true, Result: { } previous } &&
+             string.Equals(_scheduledMarketLeague, league, StringComparison.OrdinalIgnoreCase) &&
+             MarketPriceArchive.Covers(previous, nowUtc)))
+            return;
+
+        _scheduledMarketLeague = league;
+        _scheduledMarketRead = ReadMarketSnapshot(league, nowUtc);
+    }
+
     private void RefreshMarket(long now)
     {
-        if (_marketRead?.IsCompleted == true)
-        {
-            if (_marketRead.IsCompletedSuccessfully)
-                _market = _marketRead.Result;
-            _marketRead = null;
-        }
+        AcceptMarket();
         var league = GameController.IngameState.ServerData?.League;
         if (string.IsNullOrWhiteSpace(_activeRun.League) && !string.IsNullOrWhiteSpace(league))
             _activeRun.League = league;
-        if (_marketRead != null || now < _nextPriceRead || string.IsNullOrWhiteSpace(_activeRun.League))
+        if (_market != null || _marketRead != null || now < _nextPriceRead || string.IsNullOrWhiteSpace(_activeRun.League))
             return;
 
         _nextPriceRead = now + 60000;
-        var priceLeague = _activeRun.League;
-        var root = GetPricerCacheRoot();
-        _marketRead = Task.Run(() => NinjaPriceCache.Load(root, priceLeague));
+        _marketRead = ReadMarketSnapshot(_activeRun.League, _activeRun.StartedUtc);
     }
 
-    private string GetPricerCacheRoot()
+    private Task<MarketPriceSnapshot> ReadMarketSnapshot(string league, DateTime startedUtc)
     {
-        var pricer = PluginManager?.Plugins.FirstOrDefault(plugin => plugin.Plugin?.DirectoryName == "Get-Chaos-Value");
-        return Path.Combine(pricer?.Plugin.DirectoryFullName ??
-            Path.Combine(Path.GetDirectoryName(DirectoryFullName) ?? string.Empty, "Get-Chaos-Value"), "NinjaData");
+        var archive = _priceArchive;
+        var history = _history;
+        return Task.Run(() =>
+        {
+            MarketPriceSnapshot snapshot = null;
+            try
+            {
+                snapshot = archive.Get(league, startedUtc, DateTime.UtcNow);
+                if (snapshot != null)
+                    history.FillMarketPrices(league, snapshot);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Could not load or apply market price snapshot: {ex.Message}");
+            }
+
+            return snapshot;
+        });
+    }
+
+    private void AcceptMarket()
+    {
+        if (_marketRead?.IsCompleted != true)
+            return;
+        if (_marketRead.IsCompletedSuccessfully)
+            _market = _marketRead.Result;
+        else if (_marketRead.Exception is { } error)
+            LogError($"Could not load market price snapshot: {error.GetBaseException().Message}");
+        _marketRead = null;
+    }
+
+    private async Task FinishMarketRead(MapHistory history, Guid runId, Task<MarketPriceSnapshot> read)
+    {
+        try
+        {
+            if (await read.ConfigureAwait(false) is { } snapshot)
+                history.FillMarketPrices(runId, snapshot);
+        }
+        catch (Exception ex)
+        {
+            LogError($"Could not fill saved loot prices: {ex.Message}");
+        }
+    }
+
+    private const string PricerDirectoryName = "Get-Chaos-Value";
+
+    private PluginWrapper FindPricer() => PluginManager?.Plugins.FirstOrDefault(plugin =>
+        string.Equals(plugin.Plugin?.DirectoryName, PricerDirectoryName, StringComparison.OrdinalIgnoreCase) ||
+        plugin.Plugin?.GetType().FullName == "Ninja_Price.Main.Main");
+
+    private string GetPricerCacheRoot() => GetPricerCacheRoot(FindPricer());
+
+    private string GetPricerCacheRoot(PluginWrapper pricer) => Path.Combine(pricer?.Plugin.DirectoryFullName ??
+        Path.Combine(Path.GetDirectoryName(DirectoryFullName) ?? string.Empty, PricerDirectoryName), "NinjaData");
+
+    private void UpdatePricingStatus()
+    {
+        var now = Environment.TickCount64;
+        if (_priceArchive == null || now < _nextPricingStatusRead)
+            return;
+        _nextPricingStatusRead = now + 5000;
+
+        var pricer = FindPricer();
+        var league = GameController?.InGame == true && !GameController.IsLoading
+            ? GameController.IngameState.ServerData?.League : null;
+        var message = pricer switch
+        {
+            null => "Ninja Pricer unavailable. Install the separate Get-Chaos-Value plugin and enable it in Loader.",
+            { IsEnable: false } => "Ninja Pricer is disabled. Enable it in Loader to keep prices updated.",
+            _ when !NinjaPriceCache.IsValidLeague(league) => "Ninja Pricer is enabled. Select a character to check its league cache.",
+            _ when File.Exists(Path.Combine(GetPricerCacheRoot(pricer), league, "Currency2.json")) =>
+                $"Ninja Pricer cache found for {league}.",
+            _ => $"Waiting for Ninja Pricer prices for {league}. Check the league and press Reload Prices in Ninja Pricer."
+        };
+        _pricingStatus = new PricingSourceStatus(message, _priceArchive.DirectoryPath, pricer == null);
     }
 
     private void SaveRunCheckpoint(string state = null)
@@ -660,25 +753,20 @@ public partial class MapDropStatistics
             _activeRun.MoreCurrency = _currentAreaStats.CurrentMoreCurrency;
             _activeRun.MoreMaps = _currentAreaStats.CurrentMoreMaps;
             _activeRun.MoreScarabs = _currentAreaStats.CurrentMoreScarabs;
-            _activeRun.ChaosDivineRate ??= _activeRun.GetChaosDivineRate() ?? _market?.Find("Chaos Orb");
+            AcceptMarket();
             _activeRun.DropTotals = new MapDropTotals(_currentAreaStats.CurrencyQuantity, _currentAreaStats.UniqueItems,
                 _currentAreaStats.NormalBaseItems, _currentAreaStats.MagicBaseItems, _currentAreaStats.RareBaseItems);
             _activeRun.T0UniquesDropped = _currentAreaStats.T0UniqueItems;
             _activeRun.LastT0Unique = string.IsNullOrWhiteSpace(_currentAreaStats.LastT0UniqueName)
                 ? null : _currentAreaStats.LastT0UniqueName;
-            foreach (var loot in _runLoot.Values)
-            {
-                if (!MapHistory.NeedsMarketPrice(loot))
-                    continue;
-                loot.MarketUnitDivine = loot.Name switch
-                {
-                    "Divine Orb" => 1,
-                    "Chaos Orb" => _activeRun.ChaosDivineRate,
-                    _ => _market?.FindLoot(loot)
-                };
-            }
+            _activeRun.ApplyMarketPrices(_market, _runLoot.Values);
             _activeRun.Loot = _runLoot.Values.Where(x => x.Dropped > 0 || x.Collected + x.Estimated > 0).ToList();
             _history.SaveLive(_activeRun);
+            if (state is "recorded" or "interrupted" && _marketRead is { } read)
+            {
+                _ = FinishMarketRead(_history, _activeRun.Id, read);
+                _marketRead = null;
+            }
         }
         catch (Exception ex)
         {

@@ -316,7 +316,10 @@
     <form id="cost-settings-form">
       <div class="section-heading"><h2>Map cost defaults</h2><button class="plain" type="button" data-close-dialog="cost-settings-dialog" aria-label="Close">×</button></div>
       <label>Default map price (div)<input id="default-map-price" type="number" min="0" max="1000000" step="any" required></label>
-      <p class="muted">Thread costs use each map's recorded counts and the pricer's current quotes.</p>
+      <p class="muted">This default applies to new maps. Thread costs use each map's saved market snapshot.</p>
+      <p id="pricing-source-status" class="muted" role="status">Checking Ninja Pricer…</p>
+      <p id="pricing-source-install" hidden><a href="https://github.com/exApiTools/Get-Chaos-Value" target="_blank" rel="noreferrer">Get Ninja Pricer</a></p>
+      <p id="price-archive" class="muted" hidden>Market price archive <code id="price-archive-path"></code></p>
       <p id="cost-settings-status" class="form-status" role="status"></p>
       <div class="dialog-actions"><button class="button" type="button" data-close-dialog="cost-settings-dialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
     </form>
@@ -325,7 +328,7 @@
     <form id="map-price-form">
       <div class="section-heading"><h2>Map purchase price</h2><button class="plain" type="button" data-close-dialog="map-price-dialog" aria-label="Close">×</button></div>
       <label>Price in Divine Orbs<input id="map-price" type="number" min="0" max="1000000" step="any"></label>
-      <p class="muted">Clear the price to use the default.</p>
+      <p class="muted">Clear the price to restore this map's saved default.</p>
       <p id="map-price-status" class="form-status" role="status"></p>
       <div class="dialog-actions"><button class="button" type="button" data-close-dialog="map-price-dialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
     </form>

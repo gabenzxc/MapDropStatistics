@@ -18,7 +18,7 @@ const profitModeKey = "map-drop-statistics.profit-mode";
 const state = { maps: [], filtered: [], statisticsMaps: [], selected: null, detail: null, tab: "loot", modMode: "basic", metric: "profit", visible: 25,
   editing: null, session: null, sessions: null, sessionView: "active", sessionExpanded: false, sessionAmount: "count",
   ignored: new Set(), lootSort: null, pickupScope: "all", averageItems: loadAverageItems(), averageOrder: loadAverageOrder(),
-  profitMode: loadProfitMode(), threadQuotes: {}, threadCostsByMap: new WeakMap(), costMapId: null, widget: null };
+  profitMode: loadProfitMode(), threadCostsByMap: new WeakMap(), costMapId: null, widget: null };
 const sessionPreviewSize = 9;
 const sessionHighlights = new Set(["Divine Orb", "Valdo's Puzzle Box", "Foulborn Exalted Orb", "Voidborn Reliquary Key", "Exalted Orb", "Chaos Orb"]);
 const uniqueSortOrders = {
@@ -59,7 +59,8 @@ const duration = seconds => seconds == null ? "—" : seconds >= 3600
 const pickupValue = (map, scope = state.pickupScope) => scope === "personal" ? map.personalPickupDivine :
   scope === "party" ? map.partyPickupDivine : map.profitDivine;
 const defaultMapPrice = () => state.sessions?.mapCosts?.mapPriceDivine ?? 1;
-const mapPrice = map => map.mapPriceDivine ?? defaultMapPrice();
+const recordedDefaultMapPrice = map => map.pricing?.defaultMapDivine ?? 1;
+const mapPrice = map => map.mapPriceDivine ?? recordedDefaultMapPrice(map);
 const mapProfit = (map, mode = state.profitMode, scope = state.pickupScope) => {
   const cost = mode === "net" ? mapExpense(map) : 0;
   const value = pickupValue(map, scope);
@@ -89,7 +90,7 @@ function loadProfitMode() {
 function threadExpenses(map) {
   const cached = state.threadCostsByMap.get(map);
   if (cached) return cached;
-  const quotes = state.threadQuotes[map.league] ?? {};
+  const quotes = map.pricing?.threadUnitDivine ?? {};
   const usage = map.threadUsage;
   const lines = (usage?.items ?? []).map(({ name, count }) => ({ name, units: count, unit: quotes[name] ?? null }));
   const typedCount = lines.reduce((sum, line) => sum + line.units, 0);
@@ -152,9 +153,10 @@ async function request(path, body) {
 
 async function refresh(force = false) {
   const requestId = ++latestRequest;
+  if ($("cost-settings-dialog").open) refreshPricingStatus();
   try {
-    const [maps, sessions, threadQuotes, widget] = await Promise.all([request("/api/maps"), request("/api/sessions"),
-      request("/api/thread-quotes").catch(() => ({})), request("/api/widget").catch(() => null)]);
+    const [maps, sessions, widget] = await Promise.all([request("/api/maps"), request("/api/sessions"),
+      request("/api/widget").catch(() => null)]);
     if (requestId !== latestRequest) return;
     const selection = state.sessionView === "active" ? sessions.activeId : state.sessionView;
     const session = await request(`/api/session?session=${encodeURIComponent(selection)}&pickup=${state.pickupScope}`).catch(() => null);
@@ -164,12 +166,8 @@ async function refresh(force = false) {
       sessions.minimumPrice?.currency !== state.sessions?.minimumPrice?.currency;
     const pricesChanged = sessions.includeUniquePrices !== state.sessions?.includeUniquePrices || cutoffChanged ||
       JSON.stringify(sessions.ignoredItems) !== JSON.stringify(state.sessions?.ignoredItems);
-    const costsChanged = JSON.stringify(threadQuotes) !== JSON.stringify(state.threadQuotes) ||
-      JSON.stringify(sessions.mapCosts) !== JSON.stringify(state.sessions?.mapCosts);
     const changed = JSON.stringify(maps) !== JSON.stringify(state.maps) || sessions.activeId !== state.sessions?.activeId ||
-      pricesChanged || costsChanged;
-    if (costsChanged) state.threadCostsByMap = new WeakMap();
-    state.threadQuotes = threadQuotes;
+      pricesChanged;
     state.maps = maps;
     state.sessions = sessions;
     state.widget = widget;
@@ -183,7 +181,6 @@ async function refresh(force = false) {
     if (changed || force) {
       updateLeagueFilter();
       renderOverview();
-      if (costsChanged && state.detail && !force) renderDetail();
     } else if (!dropAverageKey) {
       refreshDropAverages();
     }
@@ -198,7 +195,8 @@ async function refresh(force = false) {
       current.personalPickupDivine !== previous?.personalPickupDivine || current.partyPickupDivine !== previous?.partyPickupDivine ||
       current.unpricedPersonal !== previous?.unpricedPersonal || current.unpricedParty !== previous?.unpricedParty ||
       current.leftDivine !== previous?.leftDivine || current.leftUnpricedQuantity !== previous?.leftUnpricedQuantity ||
-      current.chaosDivineRate !== previous?.chaosDivineRate || current.mapPriceDivine !== previous?.mapPriceDivine))
+      current.chaosDivineRate !== previous?.chaosDivineRate || current.mapPriceDivine !== previous?.mapPriceDivine ||
+      JSON.stringify(current.pricing) !== JSON.stringify(previous?.pricing)))
       await loadDetail(current.id, requestId);
   } catch {
     if (requestId !== latestRequest) return;
@@ -955,15 +953,19 @@ function renderMapCosts(parent, map) {
   edit.addEventListener("click", () => {
     state.costMapId = map.id;
     $("map-price").value = map.mapPriceDivine ?? "";
-    $("map-price").placeholder = String(defaultMapPrice());
+    $("map-price").placeholder = String(recordedDefaultMapPrice(map));
     set("map-price-status", "");
     $("map-price-dialog").showModal();
   });
   parent.append(list);
+  if (map.pricing?.snapshotUtc) {
+    const label = map.pricing.estimated ? "Thread cost estimate" : "Market price snapshot";
+    parent.append(element("p", label + " · " + new Date(map.pricing.snapshotUtc).toLocaleString("en-GB"), "muted"));
+  }
   if (expenses.countMismatch)
     parent.append(element("p", `Recorded Threads: ${number.format(map.threadUsage.total)}. Per-type counts add up to ${number.format(expenses.typedCount)}.`, "muted"));
   else if (expenses.total == null)
-    parent.append(element("p", "Some Thread quotes are unavailable in the local pricer.", "muted"));
+    parent.append(element("p", "Some Thread prices are missing from this map's recorded quotes.", "muted"));
   parent.append(edit);
 }
 
@@ -1519,10 +1521,19 @@ for (const button of $("profit-mode").querySelectorAll("[data-profit-mode]")) {
     if (state.detail) renderDetail();
   });
 }
+async function refreshPricingStatus() {
+  const status = await request("/api/pricing-status").catch(() => null);
+  set("pricing-source-status", status?.message ?? "Pricing status unavailable.");
+  $("pricing-source-install").hidden = !status?.pluginMissing;
+  $("price-archive").hidden = !status?.snapshotDirectory;
+  set("price-archive-path", status?.snapshotDirectory ?? "");
+}
+
 $("open-cost-settings").addEventListener("click", () => {
   $("default-map-price").value = defaultMapPrice();
   set("cost-settings-status", "");
   $("cost-settings-dialog").showModal();
+  refreshPricingStatus();
 });
 $("open-widget-settings").addEventListener("click", openWidgetSettings);
 $("widget-settings-form").addEventListener("input", renderWidgetPreview);

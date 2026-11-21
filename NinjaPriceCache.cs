@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MapDropStatistics;
+
+internal sealed record NinjaMapQuote(int? Tier, double Divine);
 
 internal sealed class NinjaPriceCache
 {
@@ -16,16 +19,27 @@ internal sealed class NinjaPriceCache
         "DjinnCoinsUrl2", "Astrolabe2", "Ducats", "Threads"
     ];
 
-    private readonly Dictionary<string, double> _prices = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, double> _uniquePrices = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, List<(int? Tier, double Divine)>> _mapPrices = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, double> Prices { get; }
+    public Dictionary<string, double> UniquePrices { get; }
+    public Dictionary<string, List<NinjaMapQuote>> MapPrices { get; }
+
+    [JsonConstructor]
+    public NinjaPriceCache(Dictionary<string, double> prices = null, Dictionary<string, double> uniquePrices = null,
+        Dictionary<string, List<NinjaMapQuote>> mapPrices = null)
+    {
+        Prices = new(prices ?? [], StringComparer.OrdinalIgnoreCase);
+        UniquePrices = new(uniquePrices ?? [], StringComparer.OrdinalIgnoreCase);
+        MapPrices = new(mapPrices ?? [], StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static bool IsValidLeague(string league) => !string.IsNullOrWhiteSpace(league) && league is not ("." or "..") &&
+        league.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && !league.Contains('/') && !league.Contains('\\');
 
     public static NinjaPriceCache Load(string root, string league)
     {
         var prices = new NinjaPriceCache();
-        if (string.IsNullOrWhiteSpace(league) || league is "." or ".." || league.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        if (!IsValidLeague(league))
             return prices;
-
         var directory = Path.Combine(root, league);
         foreach (var name in ExchangeFiles)
             ReadFile(Path.Combine(directory, name + ".json"), prices.ReadExchange);
@@ -38,27 +52,10 @@ internal sealed class NinjaPriceCache
         return prices;
     }
 
-    public static Dictionary<string, double> LoadThreadQuotes(string root, string league)
-    {
-        var quotes = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(league) || league is "." or ".." ||
-            league.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            return quotes;
-
-        var prices = new NinjaPriceCache();
-        ReadFile(Path.Combine(root, league, "Threads.json"), prices.ReadExchange);
-        foreach (var name in MapThreadUsage.NamesByStat.Values)
-        {
-            if (prices.Find(name) is { } price)
-                quotes[name] = price;
-        }
-        return quotes;
-    }
-
     public double? FindLoot(MapLoot item)
     {
         if (item.Category == "Unique")
-            return _uniquePrices.TryGetValue(item.Name, out var unique) ? unique : null;
+            return UniquePrices.TryGetValue(item.Name, out var unique) ? unique : null;
         if (item.Category == "Map" || item.Name == NightmareMap)
             return FindMap(item.Name, item.MapTier);
         return item.Category is "Magic" or "Rare" ? null : Find(item.Name);
@@ -81,18 +78,19 @@ internal sealed class NinjaPriceCache
             if (price is not > 0 && Find("Chaos Orb") is { } chaos)
                 price = Number(entry, "chaosValue", "ChaosValue") * chaos;
             // A ground name usually lacks variant details. Use the lowest eligible base quote.
-            if (price is > 0 && (!_uniquePrices.TryGetValue(name, out var previous) || price < previous))
-                _uniquePrices[name] = price.Value;
+            if (price is > 0 && double.IsFinite(price.Value) &&
+                (!UniquePrices.TryGetValue(name, out var previous) || price < previous))
+                UniquePrices[name] = price.Value;
         }
     }
 
     public double? Find(string name) =>
         name.Equals("Divine Orb", StringComparison.OrdinalIgnoreCase) ? 1 :
-        _prices.TryGetValue(name, out var price) ? price : null;
+        Prices.TryGetValue(name, out var price) ? price : null;
 
     public double? FindMap(string name, int? tier)
     {
-        if (!_mapPrices.TryGetValue(name, out var quotes))
+        if (!MapPrices.TryGetValue(name, out var quotes))
             return null;
         var matching = quotes.Where(quote => tier.GetValueOrDefault() > 0 ? quote.Tier == tier : !quote.Tier.HasValue).ToArray();
         if (matching.Length == 1)
@@ -113,12 +111,12 @@ internal sealed class NinjaPriceCache
             var price = Number(entry, "divineValue", "DivineValue");
             if (price is not > 0 && Find("Chaos Orb") is { } chaosRate)
                 price = Number(entry, "chaosValue", "ChaosValue") * chaosRate;
-            if (price is not > 0)
+            if (price is not > 0 || !double.IsFinite(price.Value))
                 continue;
             var tier = (int?)Number(entry, "mapTier", "MapTier");
-            if (!_mapPrices.TryGetValue(name, out var quotes))
-                _mapPrices[name] = quotes = [];
-            quotes.Add((tier is > 0 ? tier : null, price.Value));
+            if (!MapPrices.TryGetValue(name, out var quotes))
+                MapPrices[name] = quotes = [];
+            quotes.Add(new NinjaMapQuote(tier is > 0 ? tier : null, price.Value));
         }
     }
 
@@ -188,7 +186,7 @@ internal sealed class NinjaPriceCache
     private void Add(string name, double price)
     {
         if (double.IsFinite(price) && price > 0)
-            _prices.TryAdd(name, price);
+            Prices.TryAdd(name, price);
     }
 
     private static void ReadFile(string path, Action<JsonElement> parse)

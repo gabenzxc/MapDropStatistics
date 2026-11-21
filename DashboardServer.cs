@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 
 namespace MapDropStatistics;
 
+internal sealed record PricingSourceStatus(string Message, string SnapshotDirectory, bool PluginMissing);
+
 internal sealed class DashboardServer : IDisposable
 {
     private static readonly Dictionary<string, (string Resource, string Type)> Assets = new()
@@ -26,22 +28,20 @@ internal sealed class DashboardServer : IDisposable
     private readonly MapHistory _history;
     private readonly Action<string> _logError;
     private readonly NinjaItemIcons _icons;
-    private readonly string _pricerCacheRoot;
-    private readonly Dictionary<string, (long ExpiresAt, Dictionary<string, double> Prices)> _threadQuotes =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Func<PricingSourceStatus> _pricingStatus;
 
     public int Port { get; }
     public string Url => $"http://127.0.0.1:{Port}/";
     public bool IsListening => _listener.IsListening;
 
     public DashboardServer(int port, MapHistory history, Action<string> logError, NinjaItemIcons icons = null,
-        string pricerCacheRoot = null)
+        Func<PricingSourceStatus> pricingStatus = null)
     {
         Port = port;
         _history = history;
         _logError = logError;
         _icons = icons;
-        _pricerCacheRoot = pricerCacheRoot;
+        _pricingStatus = pricingStatus;
         try
         {
             _listener.Prefixes.Add(Url);
@@ -112,6 +112,11 @@ internal sealed class DashboardServer : IDisposable
                 await SendJson(response, _history.ListSessions()).ConfigureAwait(false);
                 return;
             }
+            if (request.HttpMethod == "GET" && path == "/api/pricing-status")
+            {
+                await SendJson(response, _pricingStatus?.Invoke()).ConfigureAwait(false);
+                return;
+            }
             if (request.HttpMethod == "GET" && path == "/api/widget")
             {
                 await SendJson(response, _history.ReadWidgetForDashboard()).ConfigureAwait(false);
@@ -139,11 +144,6 @@ internal sealed class DashboardServer : IDisposable
                         .Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
                 });
                 response.StatusCode = 204;
-                return;
-            }
-            if (request.HttpMethod == "GET" && path == "/api/thread-quotes")
-            {
-                await SendJson(response, GetThreadQuotes()).ConfigureAwait(false);
                 return;
             }
             if (request.HttpMethod == "POST" && path == "/api/settings/map-costs")
@@ -372,27 +372,6 @@ internal sealed class DashboardServer : IDisposable
     }
 
     private static bool IsValidMapPrice(double price) => double.IsFinite(price) && price is >= 0 and <= 1000000;
-
-    private Dictionary<string, Dictionary<string, double>> GetThreadQuotes()
-    {
-        var quotes = new Dictionary<string, Dictionary<string, double>>(StringComparer.OrdinalIgnoreCase);
-        var leagues = _history.ListLeagues();
-        var now = Environment.TickCount64;
-        lock (_threadQuotes)
-        {
-            foreach (var league in leagues)
-            {
-                if (!_threadQuotes.TryGetValue(league, out var cached) || cached.ExpiresAt <= now)
-                {
-                    var prices = NinjaPriceCache.LoadThreadQuotes(_pricerCacheRoot, league);
-                    cached = (now + (prices.Count == 0 ? 10000 : 60000), prices);
-                    _threadQuotes[league] = cached;
-                }
-                quotes[league] = cached.Prices;
-            }
-        }
-        return quotes;
-    }
 
     private bool ValidateEdit(HttpListenerRequest request, HttpListenerResponse response, int maxBodyBytes = 1024)
     {
