@@ -28,6 +28,11 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Dashboard\index.html" LogicalName="Dashboard.index.html" />
+    <EmbeddedResource Include="Dashboard\dashboard.css" LogicalName="Dashboard.dashboard.css" />
+    <EmbeddedResource Include="Dashboard\dashboard.js" LogicalName="Dashboard.dashboard.js" />
+    <EmbeddedResource Include="Dashboard\comparison.js" LogicalName="Dashboard.comparison.js" />
+    <EmbeddedResource Include="uniqueDropTiers.json" LogicalName="UniqueDropTiers.json" />
     <Content Include="t0_uniques.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>

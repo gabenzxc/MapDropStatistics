@@ -4,3 +4,5 @@ obj/
 *.user
 *.suo
 last_session_summary.json
+Errors.txt
+SavedMapStats/

@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111513">
+  <title>Maps · Map Drop Statistics</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+  <script src="/comparison.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div>
+        <p class="product">PATH OF EXILE <span>·</span> MAP DROP STATISTICS</p>
+        <h1>Map history</h1>
+      </div>
+      <p id="connection" class="connection" role="status">Loading map history…</p>
+    </header>
+    <div class="switch dashboard-views" role="group" aria-label="Dashboard view">
+      <button type="button" id="show-history" aria-controls="history-view" aria-pressed="true">History</button>
+      <button type="button" id="show-comparison" aria-controls="comparison-view" aria-pressed="false">Compare sessions</button>
+    </div>
+    <div id="history-view">
+    <div class="session-controls">
+      <label>Session <select id="session-view"><option value="active">Current session</option></select></label>
+      <button class="button" type="button" id="new-session">New session</button>
+      <button class="button" type="button" id="resume-session" hidden>Resume</button>
+      <label class="check session-pricing"><input id="unique-prices" type="checkbox"> Include base prices for uniques</label>
+      <button class="button" type="button" id="open-ignore-list">Global ignore list</button>
+      <button class="button" type="button" id="open-widget-settings" disabled>Widget settings</button>
+      <span id="session-hideout-time" class="muted"></span>
+      <p id="session-control-status" class="form-status" role="status"></p>
+    </div>
+    <div class="toolbar">
+      <label>Period <select id="limit"><option value="0">All maps</option><option value="20">Last 20 maps</option><option value="50">Last 50 maps</option></select></label>
+      <label>League <select id="league"><option value="">All leagues</option></select></label>
+      <label>Status <select id="status"><option value="">All statuses</option><option value="failed">Failed</option><option value="active">In progress</option><option value="recorded">Recorded</option><option value="interrupted">Interrupted</option><option value="legacy">Legacy records</option><option value="excluded">Excluded from statistics</option></select></label>
+      <label class="search">Search <input type="search" id="search" placeholder="Map name"></label>
+    </div>
+    <section class="metrics" aria-label="Overview">
+      <div class="metric">
+        <p id="profit-label">Pickup value</p><strong id="total" class="metric-price">—</strong>
+        <small id="total-note">Priced pickups</small>
+      </div>
+      <div class="metric"><p id="hour-label">Value per hour</p><strong id="hour" class="metric-price">—</strong><small id="time-note">Time spent in maps</small></div>
+      <div class="metric"><p>Average per map</p><strong id="average" class="metric-price">—</strong><small id="map-note">Maps with pickup tracking</small></div>
+      <div class="metric"><p>Left on the ground</p><strong id="left-total" class="metric-price">—</strong><small id="left-note">Priced drops</small></div>
+      <div class="metric" id="kill-metric" hidden><p>Monster kills</p><strong id="kills-total">—</strong><small id="kills-note">Selected period</small></div>
+      <div class="metric"><p>Failed maps</p><strong id="fails">—</strong><small id="fail-note">Selected period</small></div>
+    </section>
+    <div class="profit-controls">
+      <div id="profit-mode" class="switch" role="group" aria-label="Profit calculation">
+        <button type="button" data-profit-mode="gross" aria-pressed="true">Gross</button>
+        <button type="button" data-profit-mode="net" aria-pressed="false" title="Subtract the full map costs from the selected pickup value">Net</button>
+      </div>
+      <span id="cost-summary" class="muted"></span>
+      <button id="open-cost-settings" type="button" class="button">Cost settings</button>
+    </div>
+    <div id="total-pickup-split" class="pickup-scope" role="group" aria-label="Pickup filter" hidden>
+      <button class="button" type="button" data-pickup-scope="all" aria-pressed="true">All drops</button>
+      <button class="button" type="button" data-pickup-scope="personal" aria-pressed="false">You <span id="total-pickup-split-you"></span></button>
+      <button class="button" type="button" data-pickup-scope="party" aria-pressed="false" title="Estimated party pickups">Party est. <span id="total-pickup-split-party"></span></button>
+    </div>
+    <div class="overview-panels">
+      <section class="panel trend" aria-labelledby="trend-title">
+        <div class="section-heading">
+          <h2 id="trend-title">Loot trends</h2>
+          <div class="switch" role="group" aria-label="Chart metric">
+            <button data-metric="profit" aria-pressed="true">Div / map</button>
+            <button data-metric="hour" aria-pressed="false">Div / hour</button>
+          </div>
+        </div>
+        <div id="plot" class="plot">
+          <canvas id="chart" aria-label="Chart of pickup value by map. The map list shows the same values." role="img"></canvas>
+          <p id="chart-empty" class="empty" hidden>Record a map to see its pickup value here.</p>
+        </div>
+        <div class="chart-labels"><span id="chart-start"></span><span id="chart-end"></span></div>
+      </section>
+      <section class="panel drop-averages" aria-labelledby="drop-averages-title">
+        <div class="section-heading">
+          <h2 id="drop-averages-title">Drops per map</h2>
+          <p id="drop-averages-note" class="muted" role="status"></p>
+        </div>
+        <dl id="drop-average-items"></dl>
+        <form id="drop-averages-form">
+          <label class="visually-hidden" for="drop-average-name">Item name</label>
+          <input id="drop-average-name" list="drop-average-suggestions" maxlength="240" placeholder="Item name" required>
+          <datalist id="drop-average-suggestions"></datalist>
+          <button class="button" type="submit">Add item</button>
+        </form>
+      </section>
+      <section class="panel session" aria-labelledby="session-title">
+        <div class="section-heading">
+          <h2 id="session-title">Session drops</h2>
+          <span id="session-maps" class="muted"></span>
+        </div>
+        <div class="session-summary">
+          <p id="session-note" class="muted"></p>
+          <div id="session-amount-mode" class="switch" role="group" aria-label="Session loot measurement" hidden>
+            <button type="button" data-session-amount="count" aria-pressed="true">Count</button>
+            <button type="button" data-session-amount="divines" aria-pressed="false">Divines</button>
+          </div>
+        </div>
+        <p id="session-empty" class="empty">Loading drops…</p>
+        <ul id="session-loot" class="session-loot" hidden></ul>
+        <button id="session-more" class="button" type="button" aria-controls="session-loot" aria-expanded="false" hidden>Show all</button>
+      </section>
+    </div>
+    <div class="workspace">
+      <section class="panel map-list" aria-labelledby="maps-title">
+        <div class="section-heading"><h2 id="maps-title">Maps</h2><span id="map-count" class="muted"></span></div>
+        <div class="map-list-controls">
+          <label for="map-sort">Sort by</label>
+          <select id="map-sort">
+            <option value="recent">Most recent</option>
+            <option value="profit">Total profit</option>
+            <option value="divines">Divine Orbs dropped</option>
+            <option value="uniques">Uniques dropped</option>
+            <option id="sort-history-kills" value="kills" hidden>Total kills</option>
+          </select>
+          <label for="map-encounter">Encounter</label>
+          <select id="map-encounter"><option value="">All encounters</option></select>
+        </div>
+        <div id="maps"></div>
+        <button id="more" class="button more" hidden>Show more</button>
+      </section>
+      <section class="panel details" aria-labelledby="detail-name">
+        <div class="section-heading">
+          <div><h2 id="detail-name">Map details</h2><p id="detail-meta" class="muted"></p><div id="detail-zones" class="zone-tags" hidden></div></div>
+          <div id="detail-profit" class="detail-profit" hidden>
+            <div>
+              <span class="muted" id="detail-profit-label">Pickup value</span><strong id="detail-value" class="value"></strong>
+              <div id="detail-pickup-split" class="pickup-scope map-pickup-scope" role="group" aria-label="Map pickup filter" hidden>
+                <button class="button" type="button" data-pickup-scope="all" aria-pressed="true">All drops</button>
+                <button class="button" type="button" data-pickup-scope="personal" aria-pressed="false">You <span id="detail-pickup-split-you"></span></button>
+                <button class="button" type="button" data-pickup-scope="party" aria-pressed="false" title="Estimated party pickups">Party est. <span id="detail-pickup-split-party"></span></button>
+              </div>
+            </div>
+            <div id="detail-ground"><span class="muted">Left on the ground</span><strong id="detail-left" class="value"></strong></div>
+          </div>
+        </div>
+        <p id="detail-empty" class="empty">Select a map to view its details.</p>
+        <div id="selected" hidden>
+          <div id="map-stats" class="area-stats"></div>
+          <details id="kill-diagnostics" class="kill-diagnostics" hidden>
+            <summary>Kill diagnostics</summary>
+            <div id="kill-diagnostics-body"></div>
+          </details>
+          <dl id="run-totals" class="run-totals" aria-label="Map loot totals"></dl>
+          <div class="detail-controls">
+            <div id="tabs" class="switch" role="group" aria-label="Map details">
+              <button data-tab="loot" aria-pressed="true">Loot</button>
+              <button data-tab="uniques" aria-pressed="false">Uniques</button>
+              <button data-tab="mods" aria-pressed="false">Modifiers</button>
+              <button data-tab="altars" aria-pressed="false">Altars</button>
+              <button data-tab="costs" aria-pressed="false">Costs</button>
+            </div>
+            <div class="map-detail-actions">
+              <label class="outcome">Failed <select id="failure"><option value="auto">Automatic</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+              <label class="check"><input id="map-include-statistics" type="checkbox" checked> Include in statistics</label>
+            </div>
+          </div>
+          <div id="loot-tools" class="loot-tools">
+            <label for="loot-search" class="visually-hidden">Search items on this map</label>
+            <input type="search" id="loot-search" placeholder="Find an item">
+            <button type="button" id="reset-loot-sort" class="button" hidden>Default order</button>
+            <p id="table-note" class="muted detail-note"></p>
+          </div>
+          <div id="mod-tools" class="mod-tools" hidden>
+            <div class="switch" role="group" aria-label="Which modifiers to display">
+              <button data-mod-mode="basic" aria-pressed="true">Basic</button>
+              <button data-mod-mode="all" aria-pressed="false">All</button>
+            </div>
+          </div>
+          <div id="unique-tools" class="unique-tools" hidden>
+            <label>Scope <select id="unique-scope"><option value="map">This map</option><option value="period">Selected period</option></select></label>
+            <label>Type <select id="unique-type"><option value="">All types</option></select></label>
+            <label>Tier <select id="unique-tier">
+              <option value="">All tiers</option><option value="0">T0</option><option value="1">T1</option>
+              <option value="2">T2</option><option value="3">T3</option><option value="4">T4</option>
+              <option value="5">T5</option><option value="unknown">Unknown</option>
+            </select></label>
+            <label>Sort by <select id="unique-sort">
+              <option value="most">Most first</option><option value="fewest">Fewest first</option>
+              <option value="price-high">Highest price</option><option value="price-low">Lowest price</option>
+              <option value="tier">Tier (T0 first)</option><option value="tier-reverse">Tier (T5 first)</option>
+              <option value="type">Type (A–Z)</option><option value="type-reverse">Type (Z–A)</option>
+              <option value="name">Name (A–Z)</option><option value="name-reverse">Name (Z–A)</option>
+            </select></label>
+          </div>
+          <div id="details-body" class="details-body"></div>
+          <p id="save-status" class="form-status" role="status"></p>
+        </div>
+      </section>
+    </div>
+    </div>
+    <section id="comparison-view" aria-label="Compare sessions" hidden>
+      <div class="panel compare-controls">
+        <label><span class="compare-a">Session A</span><select id="compare-a"></select></label>
+        <label><span class="compare-b">Session B</span><select id="compare-b"></select></label>
+        <label>Profit <select id="compare-profit"><option value="gross">Gross</option><option value="net">Net</option></select></label>
+        <label>Pickups <select id="compare-pickup"><option value="all">All pickups</option><option value="personal">You</option><option value="party">Party est.</option></select></label>
+        <button type="button" class="button" id="compare-swap">Swap</button>
+      </div>
+      <p id="compare-empty" class="empty" role="status" hidden></p>
+      <div id="compare-results" hidden>
+        <div class="compare-drop-grid">
+          <section class="panel compare-drops" aria-labelledby="compare-session-title">
+            <div class="section-heading">
+              <h2 id="compare-session-title">Session drops</h2>
+              <div class="switch" role="group" aria-label="Session drop measurement">
+                <button type="button" data-compare-amount="count" aria-pressed="true">Count</button>
+                <button type="button" data-compare-amount="divines" aria-pressed="false">Divines</button>
+              </div>
+            </div>
+            <label class="visually-hidden" for="compare-session-search">Find a session drop</label>
+            <input id="compare-session-search" type="search" placeholder="Find an item">
+            <p id="compare-session-status" class="muted" role="status"></p>
+            <div id="compare-session-content"></div>
+            <button type="button" class="button" id="compare-session-more" aria-controls="compare-session-content" aria-expanded="false" hidden>Show all</button>
+          </section>
+          <section class="panel compare-drops" aria-labelledby="compare-averages-title">
+            <div class="section-heading">
+              <h2 id="compare-averages-title">Drops per map</h2>
+              <p id="compare-averages-status" class="muted" role="status"></p>
+            </div>
+            <div id="compare-averages-content"></div>
+            <div class="compare-map-averages">
+              <h3>Map averages</h3>
+              <div id="compare-map-averages"></div>
+            </div>
+          </section>
+        </div>
+        <div class="compare-overview">
+          <section class="panel compare-metrics" aria-labelledby="compare-summary-title">
+            <h2 id="compare-summary-title">Session totals</h2>
+            <div class="compare-scroll">
+              <table class="compare-table">
+                <thead><tr><th scope="col">Metric</th><th scope="col" class="numeric compare-a">A</th><th scope="col" class="numeric compare-b">B</th><th scope="col" class="numeric">A − B</th></tr></thead>
+                <tbody id="compare-totals"></tbody>
+              </table>
+            </div>
+            <p class="muted" id="compare-valuation-note" hidden></p>
+          </section>
+          <section class="panel compare-chart" aria-labelledby="compare-chart-title">
+            <div class="section-heading">
+              <h2 id="compare-chart-title">Map trends</h2>
+              <label class="visually-hidden" for="compare-metric">Chart metric</label>
+              <select id="compare-metric">
+                <option value="profit">Profit / map</option><option value="cumulative">Cumulative profit</option>
+                <option value="divines">Divine Orbs / map</option><option value="uniques">Uniques / map</option>
+              </select>
+            </div>
+            <p class="compare-legend"><span class="compare-a">Session A</span><span class="compare-b">Session B</span></p>
+            <div class="compare-plot" id="compare-plot">
+              <canvas id="compare-chart" role="img" aria-label="Both sessions plotted by map number, using a shared scale" tabindex="0"></canvas>
+              <p id="compare-chart-empty" class="empty" hidden>No values for this metric.</p>
+              <div id="compare-tooltip" class="compare-tooltip" hidden></div>
+            </div>
+            <p class="muted compare-axis-label">Map number</p>
+          </section>
+        </div>
+        <section class="panel compare-uniques" aria-labelledby="compare-uniques-title">
+          <div class="section-heading">
+            <h2 id="compare-uniques-title">Unique drops</h2>
+            <div class="compare-unique-controls">
+              <label class="visually-hidden" for="compare-unique-search">Find a unique item</label>
+              <input type="search" id="compare-unique-search" placeholder="Find a unique item">
+              <label class="visually-hidden" for="compare-unique-filter">Drop presence</label>
+              <select id="compare-unique-filter">
+                <option value="all">All uniques</option><option value="a">Only in A</option><option value="b">Only in B</option><option value="both">In both</option>
+              </select>
+            </div>
+          </div>
+          <p id="compare-unique-status" class="muted" role="status"></p>
+          <div id="compare-unique-content"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <dialog id="edit-dialog">
+    <form id="edit-form">
+      <div class="section-heading"><h2>Item valuation</h2><button class="plain" id="close-edit" type="button" aria-label="Close">×</button></div>
+      <p id="edit-name"></p>
+      <label for="unit">Unit price in Divine Orbs</label>
+      <input id="unit" type="number" min="0" max="1000000" step="any" placeholder="Ninja Pricer quote">
+      <label class="check"><input type="checkbox" id="excluded"> Exclude from this map's valuation</label>
+      <button class="button" id="ignore-from-edit" type="button">Ignore in all maps</button>
+      <p id="edit-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><button class="button" id="cancel-edit" type="button">Cancel</button><button class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="ignore-dialog">
+    <div class="section-heading"><h2>Global ignore list</h2><button class="plain" id="close-ignore-list" type="button" aria-label="Close">×</button></div>
+    <p class="muted">Ignored items are excluded from pickup and ground values across all sessions.</p>
+    <form id="ignore-threshold-form">
+      <label for="ignore-price-threshold">Minimum price per item</label>
+      <div class="ignore-input">
+        <input id="ignore-price-threshold" type="number" min="0" max="1000000" step="any" placeholder="Off">
+        <select id="minimum-price-currency" aria-label="Price currency"><option value="chaos">Chaos</option><option value="divine">Divine</option></select>
+        <button class="button" type="submit">Save</button>
+      </div>
+    </form>
+    <form id="ignore-form">
+      <label for="ignore-name">Exact item name</label>
+      <div class="ignore-input"><input id="ignore-name" maxlength="240" list="ignore-suggestions" placeholder="Alchemy Shard" required><button class="button primary" type="submit">Add</button></div>
+      <datalist id="ignore-suggestions"></datalist>
+    </form>
+    <p id="ignore-empty" class="empty">No ignored items.</p>
+    <ul class="ignore-items" id="ignored-items"></ul>
+    <p id="ignore-status" class="form-status" role="status"></p>
+  </dialog>
+  <dialog id="cost-settings-dialog">
+    <form id="cost-settings-form">
+      <div class="section-heading"><h2>Map cost defaults</h2><button class="plain" type="button" data-close-dialog="cost-settings-dialog" aria-label="Close">×</button></div>
+      <label>Default map price (div)<input id="default-map-price" type="number" min="0" max="1000000" step="any" required></label>
+      <p class="muted">Thread costs use each map's recorded counts and the pricer's current quotes.</p>
+      <p id="cost-settings-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><button class="button" type="button" data-close-dialog="cost-settings-dialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="map-price-dialog">
+    <form id="map-price-form">
+      <div class="section-heading"><h2>Map purchase price</h2><button class="plain" type="button" data-close-dialog="map-price-dialog" aria-label="Close">×</button></div>
+      <label>Price in Divine Orbs<input id="map-price" type="number" min="0" max="1000000" step="any"></label>
+      <p class="muted">Clear the price to use the default.</p>
+      <p id="map-price-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><button class="button" type="button" data-close-dialog="map-price-dialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="widget-settings-dialog">
+    <form id="widget-settings-form">
+      <div class="section-heading"><h2>Widget settings</h2><button class="plain" type="button" data-close-dialog="widget-settings-dialog" aria-label="Close">×</button></div>
+      <div class="widget-settings-grid">
+        <div class="widget-controls">
+          <label class="check"><input type="checkbox" id="widget-enabled"> Show in-game widget</label>
+          <label class="check"><input type="checkbox" id="widget-outside"> Show outside maps</label>
+          <label class="check"><input type="checkbox" id="widget-panels"> Show over game panels</label>
+          <label class="check"><input type="checkbox" id="widget-compact"> Compact layout</label>
+          <label><span>Horizontal position <output id="widget-x-label"></output></span><input id="widget-x" type="range" min="0" max="100"></label>
+          <label><span>Vertical position <output id="widget-y-label"></output></span><input id="widget-y" type="range" min="0" max="100"></label>
+          <div class="widget-position-preview" aria-hidden="true"><span id="widget-position-marker"></span></div>
+          <label><span>Background opacity <output id="widget-opacity-label"></output></span><input id="widget-opacity" type="range" min="25" max="100"></label>
+          <fieldset><legend>Rows</legend><div id="widget-rows" class="widget-row-options"></div></fieldset>
+        </div>
+        <div class="widget-preview-pane">
+          <h3>Live preview</h3>
+          <div class="widget-preview" id="widget-preview"></div>
+          <label>Custom items <span class="muted">One exact item name per line</span>
+            <textarea id="widget-items" rows="3" maxlength="10000"></textarea>
+          </label>
+        </div>
+      </div>
+      <p id="widget-settings-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><button class="button" type="button" data-close-dialog="widget-settings-dialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

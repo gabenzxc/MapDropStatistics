@@ -1,0 +1,156 @@
+using System;
+using System.Linq;
+using System.Threading;
+using ExileCore.Shared.Enums;
+using SharpDX;
+using Vector2 = System.Numerics.Vector2;
+
+namespace MapDropStatistics;
+
+public partial class MapDropStatistics
+{
+    private const int WidgetT0HighlightMs = 8000;
+    private long _lastWidgetUpdate;
+    private LiveWidget _measuredWidget;
+    private string _measuredT0DropName;
+    private WidgetLayout _widgetLayout;
+    private WidgetT0Drop _widgetT0Drop;
+
+    private sealed record WidgetLayout(WidgetRow[] Rows, float Width, float Height, float Padding, float LineHeight,
+        float CurrentOffset, float SessionOffset, float InlineOffset);
+    private sealed record WidgetT0Drop(string Name, long DetectedAt);
+
+    private void NotifyWidgetT0Drop(string name)
+    {
+        if (_activeRun is { } run && _history?.GetSummary(run.Id)?.ExcludedFromStatistics == true)
+            return;
+        Volatile.Write(ref _widgetT0Drop, new WidgetT0Drop(name, Environment.TickCount64));
+    }
+
+    private WidgetSettings GetWidgetDefaults()
+    {
+        var visible = Settings.Display.Visibility;
+        (string Id, bool Enabled)[] previous =
+        [
+            ("maps", visible.ShowMapsAndFails), ("map-time", visible.ShowMapTime), ("hideout-time", visible.ShowHoTime),
+            ("currency", visible.ShowCurrencyQuantity), ("uniques", visible.ShowUniqueItems),
+            ("t0", visible.ShowT0Uniques), ("last-t0", visible.ShowT0Uniques), ("divine", visible.ShowDivineOrbs),
+            ("valdo", visible.ShowValdosBox), ("profit", visible.ShowMapProfit), ("custom", visible.ShowCustomTrackedItems)
+        ];
+        return new WidgetSettings(ShowOutsideMaps: Settings.Tracking.ShowWhenNotTrackingArea,
+            X: (int)Settings.Display.Position.XPos.Value, Y: (int)Settings.Display.Position.YPos.Value,
+            HiddenRows: previous.Where(row => !row.Enabled).Select(row => row.Id).ToArray(),
+            CustomItems: GetConfiguredCustomTrackedItems().Concat(GetConfiguredTrackedDropWindowItems())
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private void UpdateLiveWidget(bool inGame)
+    {
+        if (_history == null)
+            return;
+        var now = Environment.TickCount64;
+        if (now - _lastWidgetUpdate < 1000)
+            return;
+        _lastWidgetUpdate = now;
+
+        var area = inGame ? GameController.Area.CurrentArea : null;
+        _history.ObserveHideout(area?.IsHideout == true);
+        var session = _history.ActiveSessionId;
+        var inMap = IsTrackableArea(area);
+        var mapSeconds = inMap && _trackingCurrentArea && _currentAreaStartedUtc != default
+            ? (DateTime.UtcNow - _currentAreaStartedUtc).TotalSeconds : (double?)null;
+        _history.PublishWidget(session, _activeRun?.Id, area?.Name ?? "Waiting for game", inGame, inMap,
+            mapSeconds);
+    }
+
+    private bool CanDrawWidget(WidgetSettings settings)
+    {
+        var ui = GameController.IngameState.IngameUi;
+        return settings.ShowOverPanels || ui != null &&
+            ui.FullscreenPanels?.Any(panel => panel.IsVisible) != true &&
+            ui.LargePanels?.Any(panel => panel.IsVisible) != true &&
+            ui.OpenLeftPanel?.IsVisible != true && ui.OpenRightPanel?.IsVisible != true;
+    }
+
+    private void DrawLiveWidget()
+    {
+        var widget = _history?.ReadWidget();
+        if (widget?.Data is not { InGame: true } data || !widget.Settings.Enabled ||
+            (!data.InMap && !widget.Settings.ShowOutsideMaps) || !CanDrawWidget(widget.Settings))
+            return;
+
+        var t0Drop = Volatile.Read(ref _widgetT0Drop);
+        var elapsed = t0Drop == null ? WidgetT0HighlightMs : Environment.TickCount64 - t0Drop.DetectedAt;
+        var highlight = !data.MapExcluded && elapsed < WidgetT0HighlightMs;
+        var t0DropName = highlight ? t0Drop.Name : null;
+        var highlightRow = widget.Settings.Shows("last-t0") ? "last-t0" : "t0";
+        var pulse = highlight ? (0.7 + 0.3 * Math.Cos(Math.Tau * elapsed / 1800)) *
+            Math.Min(1, (WidgetT0HighlightMs - elapsed) / 1400d) : 0;
+
+        if (widget != _measuredWidget || t0DropName != _measuredT0DropName)
+        {
+            _widgetLayout = MeasureWidget(widget, t0DropName);
+            _measuredWidget = widget;
+            _measuredT0DropName = t0DropName;
+        }
+        var layout = _widgetLayout;
+        var window = GameController.Window.GetWindowRectangle();
+        var x = Math.Max(0, window.Width - layout.Width) * widget.Settings.X / 100f;
+        var y = Math.Max(0, window.Height - layout.Height) * widget.Settings.Y / 100f;
+        var bounds = new RectangleF(x, y, layout.Width, layout.Height);
+        var alpha = (byte)(255 * widget.Settings.Opacity / 100);
+        Graphics.DrawBox(bounds, new Color((byte)19, (byte)25, (byte)21, alpha), 8);
+        Graphics.DrawFrame(bounds, new Color(66, 79, 66, 255), 8, 1, (int)ImGuiNET.ImDrawFlags.RoundCornersAll);
+        if (highlight)
+            Graphics.DrawFrame(bounds, new Color((byte)250, (byte)194, (byte)85, (byte)(235 * pulse)), 8, 2,
+                (int)ImGuiNET.ImDrawFlags.RoundCornersAll);
+        x += layout.Padding;
+        y += layout.Padding;
+        Graphics.DrawText(data.Area, new Vector2(x, y), new Color(235, 198, 132, 255), FontAlign.Left);
+        y += layout.LineHeight;
+        foreach (var row in layout.Rows)
+        {
+            var highlightThisRow = highlight && row.Id == highlightRow;
+            var labelColor = highlightThisRow ? new Color(255, 219, 145, 255) : new Color(184, 195, 181, 255);
+            if (highlightThisRow)
+                Graphics.DrawBox(new RectangleF(x - 4, y, layout.Width - 2 * layout.Padding + 8, layout.LineHeight),
+                    new Color((byte)168, (byte)110, (byte)43, (byte)(180 * pulse)), 4);
+            Graphics.DrawText(row.Label, new Vector2(x, y), labelColor, FontAlign.Left);
+            var currentOffset = row.Inline ? layout.InlineOffset : layout.CurrentOffset;
+            var currentColor = row.Current == "—" ? new Color(125, 136, 123, 255) : WidgetAccent(row.AccentRgb, 255);
+            Graphics.DrawText(row.Current, new Vector2(x + currentOffset, y), highlightThisRow ? labelColor : currentColor, FontAlign.Left);
+            if (row.Session != null)
+                Graphics.DrawText(row.Session, new Vector2(x + layout.SessionOffset, y), WidgetAccent(row.AccentRgb, 205), FontAlign.Left);
+            y += layout.LineHeight;
+        }
+    }
+
+    private WidgetLayout MeasureWidget(LiveWidget widget, string t0DropName)
+    {
+        var rows = widget.Data.Rows.Where(row => widget.Settings.Shows(row.Id))
+            .Select(row => row with { Label = ClipWidgetText(row.Label),
+                Current = ClipWidgetText(row.Inline ? t0DropName ?? row.Current : row.Current) }).ToArray();
+        var padding = widget.Settings.Compact ? 7f : 10f;
+        var gap = widget.Settings.Compact ? 7f : 10f;
+        var lineHeight = Graphics.MeasureText("Ag").Y + (widget.Settings.Compact ? 2 : 4);
+        var regular = rows.Where(row => !row.Inline).ToArray();
+        var inline = rows.FirstOrDefault(row => row.Inline);
+        var labelWidth = regular.Select(row => Graphics.MeasureText(row.Label).X).DefaultIfEmpty().Max();
+        var valueWidth = regular.Select(row => Graphics.MeasureText(row.Current).X).DefaultIfEmpty().Max();
+        var sessionWidth = rows.Where(row => row.Session != null)
+            .Select(row => Graphics.MeasureText(row.Session).X).DefaultIfEmpty().Max();
+        var currentOffset = labelWidth + gap;
+        var sessionOffset = currentOffset + valueWidth + gap;
+        var inlineOffset = inline == null ? 0 : Graphics.MeasureText(inline.Label).X + gap;
+        var inlineWidth = inline == null ? 0 : inlineOffset + Graphics.MeasureText(inline.Current).X;
+        var rowWidth = sessionWidth > 0 ? sessionOffset + sessionWidth : currentOffset + valueWidth;
+        var width = Math.Max(Graphics.MeasureText(widget.Data.Area).X, Math.Max(rowWidth, inlineWidth)) + 2 * padding;
+        return new WidgetLayout(rows, width, (rows.Length + 1) * lineHeight + 2 * padding,
+            padding, lineHeight, currentOffset, sessionOffset, inlineOffset);
+    }
+
+    private static string ClipWidgetText(string value) => value.Length <= 33 ? value : value[..32] + "…";
+
+    private static Color WidgetAccent(int rgb, byte alpha) =>
+        new((byte)((rgb >> 16) & 255), (byte)((rgb >> 8) & 255), (byte)(rgb & 255), alpha);
+}

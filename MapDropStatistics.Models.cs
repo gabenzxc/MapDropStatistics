@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using ExileCore.PoEMemory.MemoryObjects;
-using SharpDX;
 
 namespace MapDropStatistics;
 
@@ -629,29 +628,4 @@ public partial class MapDropStatistics
     private readonly record struct MapModifierReadResult(
         MapModifierSnapshot Snapshot,
         int MatchedStatsCount);
-
-    private readonly record struct DisplaySegment(string Text, Color Color);
-    private readonly record struct DisplayLine(bool AlignColumns, int AlignmentGroup, params DisplaySegment[] Segments)
-    {
-        public DisplayLine(params DisplaySegment[] segments) : this(false, -1, segments)
-        {
-        }
-
-        public DisplayLine(bool alignColumns, params DisplaySegment[] segments) : this(alignColumns, 0, segments)
-        {
-        }
-    }
-
-    private sealed class ColumnLayout
-    {
-        public float[] ColumnWidths { get; }
-
-        public ColumnLayout(float[] columnWidths)
-        {
-            ColumnWidths = columnWidths ?? [];
-        }
-
-        public float TotalWidth => ColumnWidths.Sum();
-    }
-
 }
