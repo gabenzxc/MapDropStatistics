@@ -8,20 +8,33 @@ namespace MapDropStatistics;
 public class MapDropStatisticsSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(false);
+    [IgnoreMenu]
     public DisplaySettings Display { get; set; } = new();
     public TrackingSettings Tracking { get; set; } = new();
+    [IgnoreMenu]
     public TrackedDropWindowSettings TrackedDropWindow { get; set; } = new();
     public ActionSettings Actions { get; set; } = new();
+    public DashboardSettings Dashboard { get; set; } = new();
     public DebugSettings Debug { get; set; } = new();
+}
+
+[Submenu]
+public sealed class DashboardSettings
+{
+    public ToggleNode ServeLocally { get; set; } = new(true);
+    public RangeNode<int> Port { get; set; } = new(17832, 1024, 65535);
+    public ToggleNode EstimatePartyPickups { get; set; } = new(true);
 }
 
 [Submenu]
 public class TrackingSettings
 {
     public ToggleNode IncludeEmptyAreasInAverage { get; set; } = new(false);
+    [IgnoreMenu]
     public ToggleNode ShowWhenNotTrackingArea { get; set; } = new(true);
     public RangeNode<int> FailUniqueThreshold { get; set; } = new(1000, 0, 20000);
     public ToggleNode CountFailMapToStatistic { get; set; } = new(true);
+    [IgnoreMenu]
     public ContentNode<TextNode> CustomTrackedCurrencyItems { get; set; } = new()
     {
         EnableControls = true,
@@ -49,6 +62,9 @@ public class TrackedDropWindowSettings
 [Submenu]
 public class ActionSettings
 {
+    public const int DefaultSavedMapStats = 1_000;
+    public const int MaximumSavedMapStats = 5_000;
+
     [IgnoreMenu]
     public ButtonNode ResetSessionAverage { get; set; } = new();
     [IgnoreMenu]
@@ -56,7 +72,9 @@ public class ActionSettings
     [IgnoreMenu]
     public ToggleNode SaveMapStats { get; set; } = new(true);
     [IgnoreMenu]
-    public RangeNode<int> MaxSavedMapStats { get; set; } = new(20, 1, 500);
+    public RangeNode<int> MaxSavedMapStats { get; set; } = new(DefaultSavedMapStats, 1, MaximumSavedMapStats);
+    [IgnoreMenu]
+    public bool ExpandedSavedMapStatsLimit { get; set; }
     [IgnoreMenu]
     public ButtonNode ClearSavedMapStats { get; set; } = new();
     [IgnoreMenu]
@@ -111,6 +129,7 @@ public class VisibilitySettings
     public ToggleNode ShowT0Uniques { get; set; } = new(true);
     public ToggleNode ShowCurrencyQuantity { get; set; } = new(true);
     public ToggleNode ShowDivineOrbs { get; set; } = new(true);
+    public ToggleNode ShowMapProfit { get; set; } = new(true);
     public ToggleNode ShowValdosBox { get; set; } = new(true);
     public ToggleNode ShowCustomTrackedItems { get; set; } = new(true);
     public RangeNode<int> CustomTrackedItemMaxLabelLength { get; set; } = new(16, 8, 64);

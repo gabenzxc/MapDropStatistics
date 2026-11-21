@@ -23,7 +23,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private const string ProvisionalCategoryFragment = "fragment";
     private const int PendingRetryIntervalMs = 100;
     private const int PendingEntryTtlMs = 3000;
-    private const int SessionSnapshotIntervalMs = 2000;
     private static readonly string[] MapStatNoiseTokens =
     [
         "boss",
@@ -83,18 +82,16 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private bool _trackingCurrentArea;
     private bool _hasPausedTrackableArea;
     private bool _hasLastKnownMapModifierSnapshot;
-    private bool _pendingResumeFingerprintValidation;
     private int _lastAreaChangeCount = -1;
     private long _nextPendingRetryTick;
-    private long _nextSessionSnapshotTick;
     private DateTime _currentAreaStartedUtc;
     private bool _isInNonMapArea;
     private DateTime _nonMapAreaStartedUtc;
     private int _entityAddedAttempts;
     private int _pendingRetryAttempts;
     private bool _wasInGameLastTick;
+    private bool _seedGroundItems;
     private MapModifierSnapshot _lastKnownMapModifierSnapshot;
-    private MapModifierSnapshot _expectedResumeMapModifierSnapshot;
 
     public override bool Initialise()
     {
@@ -105,15 +102,25 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             Settings.Actions.AddPendingMapToAverage.OnPressed += UndoLastAppliedMap;
             Settings.Actions.ClearSavedMapStats.OnPressed += ClearSavedMapStats;
             Settings.Actions.LoadLastSession.OnPressed += LoadLastSessionSnapshot;
+            if (!Settings.Actions.ExpandedSavedMapStatsLimit)
+            {
+                if (Settings.Actions.MaxSavedMapStats.Value == 500)
+                    Settings.Actions.MaxSavedMapStats.Value = ActionSettings.DefaultSavedMapStats;
+                Settings.Actions.ExpandedSavedMapStatsLimit = true;
+            }
             EnsureCustomTrackedItemDefaults();
             EnsureTrackedDropWindowDefaults();
             _t0UniqueNames = LoadT0UniqueNames();
             _uniqueArtMapping = LoadUniqueArtMapping();
             RefreshSavedMapStats();
+            InitialiseDashboard();
             if (Settings.Actions.AutoLoadLastSession)
                 LoadLastSessionSnapshot();
             _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? -1;
-            StartTrackingArea(GameController?.Area?.CurrentArea);
+            var area = GameController?.Area?.CurrentArea;
+            if (GameController?.InGame == true)
+                _history?.ObserveHideout(area?.IsHideout == true);
+            StartTrackingArea(area);
             return true;
         }
         catch (Exception ex)
@@ -127,6 +134,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         try
         {
+            _history?.ObserveHideout(area?.IsHideout == true);
             if (_uniqueArtMapping.Count == 0)
                 _uniqueArtMapping = LoadUniqueArtMapping();
             HandleAreaTransition(area);
@@ -144,9 +152,12 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (!_trackingCurrentArea || entity?.IsValid != true || GameController?.Files?.BaseItemTypes == null)
                 return;
 
-            if (!ValidatePendingResumeFingerprintIfReady() && _pendingResumeFingerprintValidation)
+            if (GameController.IsLoading || !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true))
                 return;
 
+            ObserveEncounterEntity(entity);
+            if (entity.Type == EntityType.Monster)
+                return;
             if (!entity.TryGetComponent<WorldItem>(out var worldItem))
                 return;
 
@@ -154,6 +165,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (itemEntity?.IsValid != true || string.IsNullOrEmpty(itemEntity.Path))
                 return;
 
+            RecordGroundDrop(entity, itemEntity);
             var dropKey = GetDropKey(entity, itemEntity);
             var persistentItemKey = GetPersistentItemKey(entity, itemEntity);
             if (dropKey == 0 || string.IsNullOrEmpty(persistentItemKey) || _seenPersistentItemKeys.Contains(persistentItemKey))
@@ -177,13 +189,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (!Settings.Enable || GameController?.InGame != true || GameController.IsLoading)
                 return;
 
-            if (!ShouldDraw())
-                return;
-
-            if (_trackingCurrentArea || Settings.Tracking.ShowWhenNotTrackingArea)
-                DrawOverlay(BuildLines());
-
-            DrawTrackedDropWindow();
+            DrawLiveWidget();
         }
         catch (Exception ex)
         {
@@ -196,6 +202,14 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         try
         {
             base.DrawSettings();
+            if (ImGuiNET.ImGui.Button("Open Map History"))
+                OpenDashboard();
+            if (_dashboard?.IsListening == true)
+            {
+                ImGuiNET.ImGui.SameLine();
+                ImGuiNET.ImGui.TextDisabled(_dashboard.Url);
+            }
+            ImGuiNET.ImGui.TextDisabled("Configure the widget in the browser.");
             DrawSavedMapStatsViewer();
         }
         catch (Exception ex)
@@ -208,12 +222,21 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         try
         {
-            if (GameController?.InGame != true || GameController.IsLoading)
+            UpdateDashboard();
+            var inGame = GameController?.InGame == true && !GameController.IsLoading;
+            if (!inGame)
             {
                 if (_wasInGameLastTick)
+                {
+                    SaveRunCheckpoint();
                     SaveSessionSnapshot();
+                    ResetAltarObservations();
+                }
+                if (GameController?.InGame != true)
+                    _currentAreaStartedUtc = default;
 
                 _wasInGameLastTick = false;
+                UpdateLiveWidget(false);
                 return null;
             }
 
@@ -222,9 +245,32 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             EnsureAreaState();
 
             if (!_trackingCurrentArea)
+            {
+                UpdateLiveWidget(true);
                 return null;
+            }
+
+            if (_currentAreaStartedUtc == default)
+            {
+                _currentAreaStartedUtc = DateTime.UtcNow - _currentAreaStats.Elapsed;
+                ResetPickupObservations();
+                _seedGroundItems = true;
+            }
+
+            if (_seedGroundItems)
+            {
+                _seedGroundItems = false;
+                SeedEncounterEntities();
+                if (GameController.EntityListWrapper.ValidEntitiesByType.TryGetValue(EntityType.WorldItem, out var items))
+                {
+                    foreach (var item in items.ToArray())
+                        EntityAdded(item);
+                }
+            }
 
             UpdateCurrentAreaMapModifierStats();
+            UpdateRunTracking();
+            UpdateLiveWidget(true);
 
             var now = Environment.TickCount64;
             if (now >= Interlocked.Read(ref _nextPendingRetryTick))
@@ -232,8 +278,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 Interlocked.Exchange(ref _nextPendingRetryTick, now + PendingRetryIntervalMs);
                 RetryPendingDrops();
             }
-
-            SaveSessionSnapshotIfNeeded();
         }
         catch (Exception ex)
         {
@@ -264,7 +308,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
         }
 
-        if (string.IsNullOrEmpty(liveAreaKey) || string.Equals(liveAreaKey, _currentAreaKey, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(liveAreaKey) ||
+            (string.Equals(liveAreaKey, _currentAreaKey, StringComparison.Ordinal) &&
+             IsSameMapInstance(liveArea, allowUnknown: true)))
             return;
 
         HandleAreaTransition(liveArea);
@@ -276,10 +322,13 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         var nextAreaKey = GetAreaKey(area);
         var nextIsTrackable = IsTrackableArea(area);
+        if (_trackingCurrentArea && nextIsTrackable)
+            MarkEncounterArea(area);
 
         if (_trackingCurrentArea &&
             !string.IsNullOrEmpty(_currentAreaKey) &&
-            string.Equals(_currentAreaKey, nextAreaKey, StringComparison.Ordinal))
+            string.Equals(_currentAreaKey, nextAreaKey, StringComparison.Ordinal) &&
+            IsSameMapInstance(area, allowUnknown: true))
         {
             _currentAreaName = area?.Name ?? _currentAreaName;
             _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
@@ -297,36 +346,23 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
             if (_hasPausedTrackableArea)
             {
-                var readResult = ReadCurrentMapModifierSnapshot();
-                if (HasSameMapModifierFingerprint(readResult))
+                if (IsSameMapInstance(area))
                 {
                     ResumePausedArea(area);
-                    return;
-                }
-
-                if (_hasLastKnownMapModifierSnapshot && readResult.MatchedStatsCount == 0)
-                {
-                    ResumePausedArea(area, validateFingerprintWhenReady: true);
                     return;
                 }
 
                 FinalizeCurrentArea();
             }
 
-            StartTrackingArea(area, resetStats: true);
+            StartTrackingArea(area);
             return;
         }
 
         if (nextIsTrackable)
         {
-            if (CanContinueCurrentArea(area))
-            {
-                ResumePausedArea(area);
-                return;
-            }
-
             FinalizeCurrentArea();
-            StartTrackingArea(area, resetStats: true);
+            StartTrackingArea(area);
             return;
         }
 
@@ -444,6 +480,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             {
                 _currentAreaStats.T0UniqueItems++;
                 _currentAreaStats.LastT0UniqueName = uniqueName;
+                NotifyWidgetT0Drop(uniqueName);
             }
         }
         else
@@ -519,6 +556,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 continue;
             }
 
+            RecordGroundDrop(worldEntity, itemEntity);
             if (pending.ProvisionalStackQuantity > 0 &&
                 itemEntity.TryGetComponent<Stack>(out var stack))
             {
@@ -710,39 +748,29 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _trackedDropWindowStats.Add(itemName, quantity);
     }
 
-    private int GetCurrentTrackedItemCount(string itemName)
-    {
-        return _currentAreaStats.CustomTrackedCounts.TryGetValue(itemName, out var quantity)
-            ? quantity
-            : 0;
-    }
-
-    private void StartTrackingArea(AreaInstance area, bool resetStats = true)
+    private void StartTrackingArea(AreaInstance area)
     {
         UpdateLiveTimers();
 
-        if (resetStats)
-        {
-            _seenPersistentItemKeys.Clear();
-            _pendingDropKeys.Clear();
-            _currentAreaStats.Reset();
-            _hasLastKnownMapModifierSnapshot = false;
-            _lastKnownMapModifierSnapshot = default;
-            _pendingResumeFingerprintValidation = false;
-            _expectedResumeMapModifierSnapshot = default;
-        }
+        _seenPersistentItemKeys.Clear();
+        _pendingDropKeys.Clear();
+        _currentAreaStats.Reset();
+        _hasLastKnownMapModifierSnapshot = false;
+        _lastKnownMapModifierSnapshot = default;
 
         _nextPendingRetryTick = 0;
 
         _currentAreaName = area?.Name ?? "Unknown area";
         _currentAreaKey = GetAreaKey(area);
         _trackingCurrentArea = IsTrackableArea(area);
+        _seedGroundItems = _trackingCurrentArea;
         _hasPausedTrackableArea = false;
         _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
         _currentAreaStartedUtc = DateTime.UtcNow;
         _isInNonMapArea = !_trackingCurrentArea;
         _nonMapAreaStartedUtc = _isInNonMapArea ? DateTime.UtcNow : default;
-        UpdateCurrentAreaMapModifierStats(captureAsStart: _trackingCurrentArea && resetStats);
+        StartRun(area);
+        UpdateCurrentAreaMapModifierStats(captureAsStart: _trackingCurrentArea);
         ResetDebugCounters();
     }
 
@@ -752,27 +780,26 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
 
         UpdateLiveTimers();
-        UpdateCurrentAreaMapModifierStats();
         _pendingDropKeys.Clear();
         _trackingCurrentArea = false;
         _hasPausedTrackableArea = true;
+        PauseRun();
+        SaveSessionSnapshot();
     }
 
-    private void ResumePausedArea(AreaInstance area, bool validateFingerprintWhenReady = false)
+    private void ResumePausedArea(AreaInstance area)
     {
-        var expectedSnapshot = _lastKnownMapModifierSnapshot;
-
         _currentAreaName = area?.Name ?? _currentAreaName;
         _currentAreaKey = GetAreaKey(area);
         _trackingCurrentArea = true;
+        _seedGroundItems = true;
         _hasPausedTrackableArea = false;
-        _pendingResumeFingerprintValidation = validateFingerprintWhenReady;
-        _expectedResumeMapModifierSnapshot = validateFingerprintWhenReady ? expectedSnapshot : default;
         _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
         _currentAreaStartedUtc = DateTime.UtcNow - _currentAreaStats.Elapsed;
         _isInNonMapArea = false;
         _nonMapAreaStartedUtc = default;
         _nextPendingRetryTick = 0;
+        ResumeRun(area);
         UpdateCurrentAreaMapModifierStats();
         ResetDebugCounters();
     }
@@ -788,49 +815,13 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.CurrentNonMapElapsed = DateTime.UtcNow - _nonMapAreaStartedUtc;
     }
 
-    private bool CanContinueCurrentArea(AreaInstance area)
-    {
-        if (!_trackingCurrentArea || !IsTrackableArea(area))
-            return false;
-
-        return HasSameMapModifierFingerprint(ReadCurrentMapModifierSnapshot());
-    }
-
-    private bool CanContinuePausedArea(AreaInstance area)
-    {
-        if (!_hasPausedTrackableArea || !IsTrackableArea(area))
-            return false;
-
-        return HasSameMapModifierFingerprint(ReadCurrentMapModifierSnapshot());
-    }
-
-    private bool HasSameMapModifierFingerprint(MapModifierReadResult readResult)
-    {
-        return _hasLastKnownMapModifierSnapshot &&
-               readResult.MatchedStatsCount > 0 &&
-               _lastKnownMapModifierSnapshot.Equals(readResult.Snapshot);
-    }
-
-    private bool ValidatePendingResumeFingerprintIfReady()
-    {
-        if (!_pendingResumeFingerprintValidation)
-            return true;
-
-        return ValidatePendingResumeFingerprint(ReadCurrentMapModifierSnapshot());
-    }
-
     private static bool IsTrackableArea(AreaInstance area)
     {
         if (area is not { IsTown: false, IsHideout: false, IsPeaceful: false })
             return false;
 
         var name = area.Name ?? string.Empty;
-        return !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
-    }
-
-    private bool IsInHideout()
-    {
-        return GameController?.Area?.CurrentArea?.IsHideout == true;
+        return !MapAreaRules.IsExcludedFromMaps(name) && !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
     }
 
     private static string GetAreaKey(AreaInstance area)
@@ -850,6 +841,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
         UpdateLiveTimers();
         CommitFinalMapModifierStats();
+        SaveRunCheckpoint("recorded");
 
         try
         {
@@ -886,21 +878,19 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
     private void ResetSessionStats()
     {
+        try
+        {
+            _history?.StartNewSession();
+        }
+        catch (Exception ex)
+        {
+            LogError($"Could not reset the dashboard session: {ex}");
+        }
         _sessionStats.Reset();
         _appliedAreaReviews.Clear();
-        _currentAreaStats.Reset();
-        _hasPausedTrackableArea = false;
-        _hasLastKnownMapModifierSnapshot = false;
-        _lastKnownMapModifierSnapshot = default;
-        _pendingResumeFingerprintValidation = false;
-        _expectedResumeMapModifierSnapshot = default;
-        _seenPersistentItemKeys.Clear();
-        _pendingDropKeys.Clear();
-        _currentAreaStartedUtc = DateTime.UtcNow;
-        _nonMapAreaStartedUtc = default;
-        _isInNonMapArea = false;
+        if (_isInNonMapArea)
+            _nonMapAreaStartedUtc = DateTime.UtcNow;
         SaveSessionSnapshot();
-        StartTrackingArea(GameController?.Area?.CurrentArea);
     }
 
     private void ApplyAreaReview(AreaReview review)
@@ -911,7 +901,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.Add(review.Stats);
         _appliedAreaReviews.Add(review);
         RefreshSessionLastT0UniqueName();
-        SaveSessionSnapshot();
     }
 
     private void UndoLastAppliedMap()
@@ -936,16 +925,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.LastT0UniqueName = _appliedAreaReviews
             .Select(x => x.Stats.LastT0UniqueName)
             .LastOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
-    }
-
-    private void SaveSessionSnapshotIfNeeded()
-    {
-        var now = Environment.TickCount64;
-        if (now < Interlocked.Read(ref _nextSessionSnapshotTick))
-            return;
-
-        Interlocked.Exchange(ref _nextSessionSnapshotTick, now + SessionSnapshotIntervalMs);
-        SaveSessionSnapshot();
     }
 
     private void SaveSessionSnapshot()
@@ -994,7 +973,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
             var path = GetSessionSnapshotPath();
             EnsureParentDirectoryExists(path);
-            File.WriteAllText(path, JsonSerializer.Serialize(snapshot, JsonOptions));
+            MapHistory.WriteAtomic(path, snapshot, JsonOptions);
         }
         catch (Exception ex)
         {
@@ -1070,9 +1049,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return;
 
         var readResult = ReadCurrentMapModifierSnapshot();
-        if (!ValidatePendingResumeFingerprint(readResult))
-            return;
-
+        captureAsStart |= !_hasLastKnownMapModifierSnapshot && readResult.MatchedStatsCount > 0;
         if (readResult.MatchedStatsCount > 0)
         {
             _lastKnownMapModifierSnapshot = readResult.Snapshot;
@@ -1103,26 +1080,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _currentAreaStats.FinalMoreCurrency = snapshot.MoreCurrency;
         _currentAreaStats.FinalMoreMaps = snapshot.MoreMaps;
         _currentAreaStats.FinalMoreScarabs = snapshot.MoreScarabs;
-    }
-
-    private bool ValidatePendingResumeFingerprint(MapModifierReadResult readResult)
-    {
-        if (!_pendingResumeFingerprintValidation)
-            return true;
-
-        if (readResult.MatchedStatsCount == 0)
-            return false;
-
-        _pendingResumeFingerprintValidation = false;
-        var expectedSnapshot = _expectedResumeMapModifierSnapshot;
-        _expectedResumeMapModifierSnapshot = default;
-
-        if (expectedSnapshot.Equals(readResult.Snapshot))
-            return true;
-
-        FinalizeCurrentArea();
-        StartTrackingArea(GameController?.Area?.CurrentArea, resetStats: true);
-        return false;
     }
 
     private void CommitFinalMapModifierStats()
@@ -1522,9 +1479,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{safeAreaName}.json";
         var path = Path.Combine(GetSavedMapStatsDirectory(), fileName);
         EnsureParentDirectoryExists(path);
-        File.WriteAllText(path, JsonSerializer.Serialize(payload, JsonOptions));
-        PruneSavedMapStats();
-        RefreshSavedMapStats();
+        MapHistory.WriteAtomic(path, payload, JsonOptions);
+        RefreshSavedMapStats(prune: true);
     }
 
     private string GetSavedMapStatsDirectory()
@@ -1534,27 +1490,18 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         return root;
     }
 
-    private void PruneSavedMapStats()
+    private void RefreshSavedMapStats(bool prune = false)
     {
         var directory = GetSavedMapStatsDirectory();
         var files = new DirectoryInfo(directory)
             .GetFiles("*.json")
             .OrderByDescending(x => x.CreationTimeUtc)
-            .ToList();
-
-        foreach (var file in files.Skip(Math.Max(Settings.Actions.MaxSavedMapStats, 1)))
+            .ToArray();
+        var keep = prune ? Math.Max(Settings.Actions.MaxSavedMapStats.Value, 1) : files.Length;
+        foreach (var file in files.Skip(keep))
             file.Delete();
-    }
-
-    private void RefreshSavedMapStats()
-    {
         _savedMapStatFiles.Clear();
-        var directory = GetSavedMapStatsDirectory();
-
-        _savedMapStatFiles.AddRange(new DirectoryInfo(directory)
-            .GetFiles("*.json")
-            .OrderByDescending(x => x.CreationTimeUtc)
-            .Select(x => x.FullName));
+        _savedMapStatFiles.AddRange(files.Take(keep).Select(file => file.FullName));
 
         if (!string.IsNullOrWhiteSpace(_selectedSavedMapStatPath) && !_savedMapStatFiles.Contains(_selectedSavedMapStatPath, StringComparer.OrdinalIgnoreCase))
         {
