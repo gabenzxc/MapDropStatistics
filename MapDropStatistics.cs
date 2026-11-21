@@ -210,6 +210,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                 ImGuiNET.ImGui.TextDisabled(_dashboard.Url);
             }
             ImGuiNET.ImGui.TextDisabled("Configure the widget in the browser.");
+            UpdatePricingStatus();
+            if (_pricingStatus is { } pricing)
+                ImGuiNET.ImGui.TextWrapped(pricing.Message);
             DrawSavedMapStatsViewer();
         }
         catch (Exception ex)
@@ -223,6 +226,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         try
         {
             UpdateDashboard();
+            UpdatePricingStatus();
             var inGame = GameController?.InGame == true && !GameController.IsLoading;
             if (!inGame)
             {
@@ -243,6 +247,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             _wasInGameLastTick = true;
 
             EnsureAreaState();
+            CaptureMarketSnapshot();
 
             if (!_trackingCurrentArea)
             {

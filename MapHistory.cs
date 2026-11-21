@@ -52,9 +52,31 @@ internal sealed class MapRun
     public bool ExcludedFromStatistics { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? MapPriceDivine { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MapPricing Pricing { get; set; }
 
     public double? GetChaosDivineRate() => ChaosDivineRate is > 0 ? ChaosDivineRate :
         Loot.FirstOrDefault(item => item.Name == "Chaos Orb" && item.MarketUnitDivine is > 0)?.MarketUnitDivine;
+
+    public void ApplyMarketPrices(MarketPriceSnapshot snapshot, IEnumerable<MapLoot> loot)
+    {
+        if (snapshot != null)
+        {
+            Pricing = Pricing.WithSnapshot(snapshot, MapThreadUsage.FromModifiers(Modifiers));
+            ChaosDivineRate ??= GetChaosDivineRate() ?? snapshot.Quotes.Find("Chaos Orb");
+        }
+        foreach (var item in loot)
+        {
+            if (item.MarketUnitDivine.HasValue || (item.Dropped <= 0 && item.Collected + item.Estimated <= 0))
+                continue;
+            item.MarketUnitDivine = item.Name switch
+            {
+                "Divine Orb" => 1,
+                "Chaos Orb" => ChaosDivineRate,
+                _ => snapshot?.Quotes.FindLoot(item)
+            };
+        }
+    }
 
     public MapKillCounts GetDisplayKills()
     {
@@ -147,6 +169,23 @@ internal sealed record DropAverageResult(int Maps, Dictionary<string, long> Drop
 internal enum LootScope { All, Personal, Party }
 internal sealed record FarmingSession(Guid Id, DateTime StartedUtc, string Name, double HideoutSeconds = 0);
 internal sealed record MapCostSettings(double MapPriceDivine = 1);
+internal sealed record MapPricing(double DefaultMapDivine, DateTime? SnapshotUtc = null,
+    Dictionary<string, double> ThreadUnitDivine = null, bool Estimated = false, int? SnapshotWindowHours = null)
+{
+    public int WindowHours() => Estimated || SnapshotWindowHours == MarketPriceArchive.WindowHours
+        ? MarketPriceArchive.WindowHours : MarketPriceArchive.LegacyWindowHours;
+
+    public MapPricing WithSnapshot(MarketPriceSnapshot snapshot, MapThreadUsage usage)
+    {
+        var quotes = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in usage?.Items ?? [])
+        {
+            if (snapshot.Quotes.Find(item.Name) is { } price)
+                quotes[item.Name] = price;
+        }
+        return this with { SnapshotUtc = snapshot.CapturedUtc, ThreadUnitDivine = quotes.Count > 0 ? quotes : null };
+    }
+}
 internal sealed record MapThreadUse(string Name, int Count);
 internal sealed record MapThreadUsage(int Total, MapThreadUse[] Items)
 {
@@ -188,7 +227,8 @@ internal sealed record MinimumItemPrice(double Value, string Currency)
 }
 internal sealed record SessionBook(Guid ActiveId, Guid InitialId, Guid? PreviousId, DateTime LegacyCutoffUtc,
     bool IncludeUniquePrices, FarmingSession[] Sessions, string[] IgnoredItems = null, double? IgnoreAtOrBelowDivine = null,
-    MinimumItemPrice MinimumPrice = null, MapCostSettings MapCosts = null, WidgetSettings Widget = null)
+    MinimumItemPrice MinimumPrice = null, MapCostSettings MapCosts = null, WidgetSettings Widget = null,
+    double? LegacyMapPriceDivine = null)
 {
     public MinimumItemPrice GetMinimumPrice() =>
         MinimumPrice ?? (IgnoreAtOrBelowDivine is { } amount ? new MinimumItemPrice(amount, "divine") : null);
@@ -210,6 +250,7 @@ internal sealed record MapSummary(
     public int? T0UniquesDropped { get; init; }
     public string LastT0Unique { get; init; }
     public long ValdosDropped { get; init; }
+    public MapPricing Pricing { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExcludedFromStatistics { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -284,7 +325,8 @@ internal sealed record MapSummary(
             T0UniquesDropped = run.T0UniquesDropped,
             LastT0Unique = run.LastT0Unique,
             ExcludedFromStatistics = run.ExcludedFromStatistics,
-            ValdosDropped = valdos
+            ValdosDropped = valdos,
+            Pricing = run.Pricing
         };
     }
 
@@ -316,7 +358,7 @@ internal sealed partial class MapHistory
     private readonly Dictionary<Guid, LootCounts[]> _sessionLoot = [];
     private readonly Dictionary<Guid, LiveMapEdits> _liveMapEdits = [];
     private readonly Dictionary<(Guid, LootScope), SessionDrops> _sessionDrops = [];
-    private readonly HashSet<Guid> _unpricedRuns = [];
+    private readonly HashSet<Guid> _pendingPriceRuns = [];
     private SessionBook _sessions;
     private HashSet<string> _ignoredItems;
 
@@ -330,6 +372,8 @@ internal sealed partial class MapHistory
         _archivedUniqueTypes = archivedUniqueTypes ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Directory.CreateDirectory(_directory);
         _sessions = LoadSessions(logError);
+        if (!_sessions.LegacyMapPriceDivine.HasValue)
+            SaveSessions(_sessions with { LegacyMapPriceDivine = DefaultMapPriceDivine });
         _liveWidget = new LiveWidget(_sessions.Widget ?? widgetDefaults ?? new WidgetSettings(), null);
         _ignoredItems = new HashSet<string>(_sessions.IgnoredItems ?? [], StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
@@ -366,13 +410,6 @@ internal sealed partial class MapHistory
     {
         lock (_gate)
             return CurrentIndex.GetValueOrDefault(id);
-    }
-
-    public string[] ListLeagues()
-    {
-        lock (_gate)
-            return _index.Values.Select(map => map.League).Where(league => !string.IsNullOrWhiteSpace(league))
-                .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private Dictionary<Guid, MapSummary> CurrentIndex => _sessions.IncludeUniquePrices ? _indexWithUniques : _index;
@@ -687,6 +724,15 @@ internal sealed partial class MapHistory
         }
     }
 
+    public double DefaultMapPriceDivine
+    {
+        get
+        {
+            lock (_gate)
+                return _sessions.MapCosts?.MapPriceDivine ?? 1;
+        }
+    }
+
     public bool EditMapPrice(Guid id, double? price) => Edit(id, run =>
     {
         run.MapPriceDivine = price;
@@ -706,36 +752,58 @@ internal sealed partial class MapHistory
         return true;
     }, touchTimestamp: false);
 
-    public void FillMarketPrices(Func<string, NinjaPriceCache> getPrices)
+    public void FillMarketPrices(MarketPriceArchive archive, DateTime nowUtc)
+    {
+        MapSummary[] candidates;
+        lock (_gate)
+            candidates = _pendingPriceRuns.Select(id => _index[id]).ToArray();
+        foreach (var group in candidates.GroupBy(map =>
+        {
+            var hours = map.Pricing.WindowHours();
+            var stamp = map.Pricing.Estimated ? nowUtc : map.StartedUtc;
+            return (map.League, Hours: hours, Window: MarketPriceArchive.WindowStart(stamp, hours));
+        }))
+        {
+            if (archive.Get(group.Key.League, group.Key.Window, nowUtc, group.Key.Hours) is not { } snapshot)
+                continue;
+            foreach (var map in group)
+                FillMarketPrices(map.Id, snapshot);
+        }
+    }
+
+    public void FillMarketPrices(string league, MarketPriceSnapshot snapshot)
     {
         Guid[] candidates;
         lock (_gate)
-            candidates = _unpricedRuns.ToArray();
+            candidates = _pendingPriceRuns.Select(id => _index[id]).Where(map =>
+                string.Equals(map.League, league, StringComparison.OrdinalIgnoreCase) &&
+                (map.Pricing.Estimated ||
+                 (map.Pricing.WindowHours() == MarketPriceArchive.WindowHours && MarketPriceArchive.Covers(snapshot, map.StartedUtc))))
+                .Select(map => map.Id).ToArray();
         foreach (var id in candidates)
-        {
-            var league = GetSummary(id)?.League;
-            if (string.IsNullOrWhiteSpace(league) || getPrices(league) is not { } prices)
-                continue;
-            Edit(id, run =>
-            {
-                var changed = false;
-                if (!run.GetChaosDivineRate().HasValue && prices.Find("Chaos Orb") is { } chaos)
-                {
-                    run.ChaosDivineRate = chaos;
-                    changed = true;
-                }
-                foreach (var item in run.Loot.Where(NeedsMarketPrice))
-                {
-                    var quote = item.Name == "Chaos Orb" ? run.GetChaosDivineRate() : prices.FindLoot(item);
-                    if (quote is not { } price)
-                        continue;
-                    item.MarketUnitDivine = price;
-                    changed = true;
-                }
-                return changed;
-            }, touchTimestamp: false);
-        }
+            FillMarketPrices(id, snapshot);
     }
+
+    public void FillMarketPrices(Guid id, MarketPriceSnapshot snapshot) => Edit(id, run =>
+    {
+        if (!_pendingPriceRuns.Contains(id))
+            return false;
+        run.Pricing ??= LegacyPricing();
+        if (run.Pricing.Estimated)
+        {
+            var pricing = run.Pricing.WithSnapshot(snapshot, MapThreadUsage.FromModifiers(run.Modifiers));
+            if (pricing.ThreadUnitDivine == null)
+                return false;
+            run.Pricing = pricing;
+        }
+        else
+        {
+            run.ApplyMarketPrices(snapshot, run.Loot);
+        }
+        return true;
+    });
+
+    private MapPricing LegacyPricing() => new(_sessions.LegacyMapPriceDivine ?? DefaultMapPriceDivine, Estimated: true);
 
     private bool Edit(Guid id, Func<MapRun, bool> change, bool touchTimestamp = true)
     {
@@ -793,16 +861,17 @@ internal sealed partial class MapHistory
                 lastT0 ??= names[0];
         }
         var dropBonuses = MapDropBonuses.Read(run);
+        var pricing = run.Pricing ?? LegacyPricing();
         _index[run.Id] = MapSummary.FromRun(run, false, _ignoredItems, minimumPrice, beltDrops, threadUsage)
-            with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses };
+            with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses, Pricing = pricing };
         _indexWithUniques[run.Id] = MapSummary.FromRun(run, true, _ignoredItems, minimumPrice, beltDrops, threadUsage)
-            with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses };
+            with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses, Pricing = pricing };
         _uniqueDrops[run.Id] = IndexUniqueDrops(run);
-        if (run.State is not ("active" or "paused" or "legacy") &&
-            (!run.GetChaosDivineRate().HasValue || run.Loot.Any(NeedsMarketPrice)))
-            _unpricedRuns.Add(run.Id);
+        if (run.State is not ("active" or "paused" or "legacy") && pricing.SnapshotUtc == null &&
+            !string.IsNullOrWhiteSpace(run.League) && (!pricing.Estimated || threadUsage?.Items.Length > 0))
+            _pendingPriceRuns.Add(run.Id);
         else
-            _unpricedRuns.Remove(run.Id);
+            _pendingPriceRuns.Remove(run.Id);
         if (!sessionId.HasValue)
             return;
         _sessionLoot[run.Id] = run.Loot.Where(item => item.Dropped > 0 || item.Collected + item.Estimated > 0)
@@ -843,9 +912,6 @@ internal sealed partial class MapHistory
         return _uniqueBeltNames.Contains(name) ||
             (name.StartsWith("Foulborn ", StringComparison.OrdinalIgnoreCase) && _uniqueBeltNames.Contains(name["Foulborn ".Length..]));
     }
-
-    internal static bool NeedsMarketPrice(MapLoot item) =>
-        (item.Dropped > 0 || item.Collected + item.Estimated > 0) && !item.MarketUnitDivine.HasValue;
 
     private Guid? ResolveSession(MapRun run) => run.State == "legacy" ? null :
         run.SessionId ?? (run.StartedUtc < _sessions.LegacyCutoffUtc ? _sessions.PreviousId : null) ?? _sessions.InitialId;
