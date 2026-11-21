@@ -196,6 +196,7 @@ async function refresh(force = false) {
       current.unpricedPersonal !== previous?.unpricedPersonal || current.unpricedParty !== previous?.unpricedParty ||
       current.leftDivine !== previous?.leftDivine || current.leftUnpricedQuantity !== previous?.leftUnpricedQuantity ||
       current.chaosDivineRate !== previous?.chaosDivineRate || current.mapPriceDivine !== previous?.mapPriceDivine ||
+      current.favorite !== previous?.favorite || current.failed !== previous?.failed ||
       JSON.stringify(current.pricing) !== JSON.stringify(previous?.pricing)))
       await loadDetail(current.id, requestId);
   } catch {
@@ -211,13 +212,15 @@ function renderSessionControls() {
   const archive = state.sessions.sessions.filter(session => session.id !== state.sessions.activeId).slice().reverse();
   const currentLabel = current ? `Current · ${current.name ?? dateLabel(current.startedUtc)}` : "Current session";
   const options = [[currentLabel, "active"], ...archive.map(session =>
-    [session.name ?? `Session · ${dateLabel(session.startedUtc)}`, session.id]), ["All history", "all"]];
+    [session.name ?? `Session · ${dateLabel(session.startedUtc)}`, session.id]), ["All history", "all"], ["Favorites", "favorites"]];
   if (Array.from(select.options).map(option => option.value).join("|") !== options.map(option => option[1]).join("|"))
     select.replaceChildren(...options.map(([label, value]) => new Option(label, value)));
   if (!options.some(option => option[1] === state.sessionView)) state.sessionView = "active";
   select.value = state.sessionView;
-  $("resume-session").hidden = state.sessionView === "all" || state.sessionView === "active";
+  $("resume-session").hidden = !archive.some(session => session.id === state.sessionView);
   $("unique-prices").checked = state.sessions.includeUniquePrices;
+  const threshold = state.sessions.failUniqueThreshold;
+  set("fail-note", Number.isInteger(threshold) ? `Threshold · ≤ ${number.format(threshold)} uniques` : "Selected period");
 }
 
 function renderWidgetStatus() {
@@ -352,8 +355,9 @@ function renderSession() {
   const amountMode = $("session-amount-mode");
   const byValue = state.sessionAmount === "divines";
   const showDrops = state.pickupScope === "all";
+  const favorites = state.sessionView === "favorites";
   set("session-title", state.pickupScope === "personal" ? "Your pickups" : state.pickupScope === "party" ? "Party pickups (est.)" :
-    state.sessionView === "all" ? "Drops across all sessions" : "Session drops");
+    state.sessionView === "all" ? "Drops across all sessions" : favorites ? "Favorite map drops" : "Session drops");
   list.hidden = !items.length;
   amountMode.hidden = !items.length;
   for (const choice of amountMode.querySelectorAll("[data-session-amount]"))
@@ -365,8 +369,8 @@ function renderSession() {
   set("session-more", expanded ? "Show less" : `Show all (${number.format(items.length)})`);
   set("session-maps", session ? `Maps · ${number.format(session.maps)}` : "");
   set("session-note", session?.lastMap ? `Last map · ${session.lastMap}` : "");
-  set("session-empty", session ? (showDrops ? "No drops recorded for this session." : "No pickups from this source were recorded.") :
-    "Could not load session loot.");
+  const emptyDrops = favorites ? "No drops recorded for favorite maps." : "No drops recorded for this session.";
+  set("session-empty", session ? (showDrops ? emptyDrops : "No pickups from this source were recorded.") : "Could not load session loot.");
 
   const entries = items.slice().sort((a, b) => compareLootValues(a.valueDivine, b.valueDivine, "descending") ||
     b.count - a.count || a.name.localeCompare(b.name));
@@ -558,7 +562,8 @@ function renderOverview() {
   const limit = Number($("limit").value);
   const scope = state.sessionView === "active" ? state.sessions?.activeId : state.sessionView;
   const matches = state.maps.filter(map => {
-    if (scope && scope !== "all" && map.sessionId !== scope) return false;
+    const inScope = scope === "favorites" ? map.favorite : !scope || scope === "all" || map.sessionId === scope;
+    if (!inScope) return false;
     if (league && map.league !== league) return false;
     if (search && !itemKey(map.name).includes(search)) return false;
     if (encounter && !map.zones?.includes(encounter)) return false;
@@ -622,6 +627,7 @@ function renderOverview() {
   set("total-note", unpriced ? `Unpriced · ${number.format(unpriced)} items` : net ? "After map costs" : "Priced pickups");
   set("time-note", seconds ? duration(seconds) + " in maps" : "Time spent in maps");
   set("map-note", `${number.format(valued.length)} ${valued.length === 1 ? "map" : "maps"}`);
+  set("maps-title", scope === "favorites" ? "Favorite maps" : "Maps");
   set("map-count", number.format(state.filtered.length));
   refreshDropAverages();
   renderMapList();
@@ -641,7 +647,10 @@ function renderMapList() {
   const maps = order ? state.filtered.slice().sort((a, b) => compareLootValues(order(a), order(b), "descending")) : state.filtered;
   const countLabel = { divines: "Divine Orb", uniques: "unique", kills: "kill" }[sort];
   list.replaceChildren();
-  if (!maps.length) list.append(element("p", "No matching maps.", "empty"));
+  if (!maps.length) {
+    const noFavorites = state.sessionView === "favorites" && !state.maps.some(map => map.favorite);
+    list.append(element("p", noFavorites ? "Open a map and click its star to add it to Favorites." : "No matching maps.", "empty"));
+  }
   for (const map of maps.slice(0, state.visible)) {
     const row = element("button", null, "map-row");
     row.type = "button";
@@ -650,6 +659,12 @@ function renderMapList() {
     row.setAttribute("aria-current", String(map.id === state.selected));
     const information = element("span");
     const name = element("strong", map.name);
+    if (map.favorite) {
+      const star = element("span", "★", "map-favorite-marker");
+      star.setAttribute("role", "img");
+      star.setAttribute("aria-label", "Favorite");
+      name.append(" ", star);
+    }
     if (map.failed) name.append(" ", element("span", "Failed", "map-failed"));
     if (map.excludedFromStatistics) name.append(" ", element("span", "Excluded", "map-excluded"));
     const date = dateLabel(map.startedUtc);
@@ -725,6 +740,11 @@ function renderDetail() {
   $("selected").hidden = !map;
   $("detail-empty").hidden = !!map;
   set("detail-name", map?.name ?? "Map details");
+  const star = $("toggle-map-favorite");
+  star.hidden = !map;
+  star.setAttribute("aria-pressed", String(!!map?.favorite));
+  star.title = map?.favorite ? "Remove from Favorites" : "Add to Favorites";
+  set("toggle-map-favorite", map?.favorite ? "★" : "☆");
   set("detail-meta", map ? [dateLabel(map.startedUtc), map.league, statusLabel(map),
     map.excludedFromStatistics ? "Excluded from statistics" : ""].filter(Boolean).join(" · ") : "");
   renderZoneTags($("detail-zones"), map?.zones);
@@ -1564,6 +1584,37 @@ $("widget-settings-form").addEventListener("submit", async event => {
 });
 for (const button of document.querySelectorAll("[data-close-dialog]"))
   button.addEventListener("click", () => $(button.dataset.closeDialog).close());
+$("open-delete-map").addEventListener("click", () => {
+  const map = state.maps.find(entry => entry.id === state.detail?.id);
+  if (!map) return;
+  const dialog = $("delete-map-dialog");
+  dialog.dataset.mapId = map.id;
+  set("delete-map-record", `${map.name} · ${dateLabel(map.startedUtc)}`);
+  set("delete-map-status", "");
+  dialog.showModal();
+});
+$("delete-map-dialog").addEventListener("cancel", event => {
+  if ($("confirm-delete-map").disabled) event.preventDefault();
+});
+$("delete-map-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const dialog = $("delete-map-dialog");
+  const confirm = $("confirm-delete-map");
+  const cancel = $("cancel-delete-map");
+  if (confirm.disabled) return;
+  confirm.disabled = cancel.disabled = true;
+  set("delete-map-status", "");
+  try {
+    await request(`/api/maps/${dialog.dataset.mapId}/delete`, true);
+    dialog.close();
+    hoverIndex = -1;
+    await refresh(true);
+  } catch {
+    set("delete-map-status", "Could not delete this map.");
+  } finally {
+    confirm.disabled = cancel.disabled = false;
+  }
+});
 $("cost-settings-form").addEventListener("submit", async event => {
   event.preventDefault();
   const costs = { mapPriceDivine: $("default-map-price").valueAsNumber };
@@ -1769,6 +1820,21 @@ $("map-include-statistics").addEventListener("change", async event => {
     }
   } finally {
     input.disabled = false;
+  }
+});
+$("toggle-map-favorite").addEventListener("click", async event => {
+  const map = state.maps.find(entry => entry.id === state.detail?.id);
+  if (!map) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  set("save-status", "");
+  try {
+    await request(`/api/maps/${map.id}/favorite`, !map.favorite);
+    await refresh(true);
+  } catch {
+    if (map.id === state.selected) set("save-status", "Could not save this favorite.");
+  } finally {
+    button.disabled = false;
   }
 });
 for (const id of ["close-edit", "cancel-edit"]) $(id).addEventListener("click", () => $("edit-dialog").close());

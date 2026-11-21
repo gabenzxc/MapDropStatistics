@@ -50,6 +50,8 @@ internal sealed class MapRun
     public bool? FailureOverride { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExcludedFromStatistics { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Favorite { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? MapPriceDivine { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -234,7 +236,7 @@ internal sealed record SessionBook(Guid ActiveId, Guid InitialId, Guid? Previous
         MinimumPrice ?? (IgnoreAtOrBelowDivine is { } amount ? new MinimumItemPrice(amount, "divine") : null);
 }
 internal sealed record SessionList(Guid ActiveId, bool IncludeUniquePrices, FarmingSession[] Sessions, string[] IgnoredItems,
-    MinimumItemPrice MinimumPrice, MapCostSettings MapCosts);
+    MinimumItemPrice MinimumPrice, MapCostSettings MapCosts, int FailUniqueThreshold);
 internal sealed record IgnoreItemChange(string Name, bool Ignored);
 
 internal sealed record MapSummary(
@@ -251,13 +253,18 @@ internal sealed record MapSummary(
     public string LastT0Unique { get; init; }
     public long ValdosDropped { get; init; }
     public MapPricing Pricing { get; init; }
+    internal bool WipeObserved { get; init; }
+    internal bool? FailureOverride { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExcludedFromStatistics { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Favorite { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MapDropBonus[] DropBonuses { get; init; }
 
     public static MapSummary FromRun(MapRun run, bool includeUniquePrices = false, IReadOnlySet<string> ignoredItems = null,
-        MinimumItemPrice minimumPrice = null, int? uniqueBeltsDropped = null, MapThreadUsage threadUsage = null)
+        MinimumItemPrice minimumPrice = null, int? uniqueBeltsDropped = null, MapThreadUsage threadUsage = null,
+        int failUniqueThreshold = MapFailureRules.DefaultUniqueThreshold)
     {
         var chaosDivineRate = run.GetChaosDivineRate();
         var minimumDivine = minimumPrice?.InDivine(chaosDivineRate);
@@ -312,19 +319,24 @@ internal sealed record MapSummary(
                 (signal.Source is "Entity" or "Transition entity") && IsWildwoodEntrance(signal.Detail)))
             zones.Add("wildwood");
 
+        var uniqueTotal = run.DropTotals?.Uniques ?? uniquesDropped;
+        var failed = MapFailureRules.IsFailed(run.State, run.FailureOverride, run.WipeObserved, uniqueTotal, failUniqueThreshold);
         return new MapSummary(run.Id, run.Name, run.League, run.StartedUtc, run.UpdatedUtc, run.Seconds,
-            run.State, run.FailureOverride ?? run.WipeObserved, run.Deaths + run.PartyDeaths, run.Quantity, run.Rarity, run.PackSize,
+            run.State, failed, run.Deaths + run.PartyDeaths, run.Quantity, run.Rarity, run.PackSize,
             run.Loot.Sum(x => x.Dropped), run.Loot.Sum(x => x.Collected), run.Loot.Sum(x => x.Estimated),
             unpricedPersonal + unpricedParty, personalPickup + partyPickup,
             zones.ToArray(),
             run.SessionId, leftDivine, leftUnpriced, kills?.Total, kills, chaosDivineRate,
             personalPickup, partyPickup, run.PartyDeaths, unpricedPersonal, unpricedParty,
-            divineOrbsDropped, run.DropTotals?.Uniques ?? uniquesDropped, uniqueBeltsDropped, run.MapPriceDivine, threadUsage)
+            divineOrbsDropped, uniqueTotal, uniqueBeltsDropped, run.MapPriceDivine, threadUsage)
         {
             CurrencyDropped = run.DropTotals?.Currency ?? currencyDropped,
             T0UniquesDropped = run.T0UniquesDropped,
             LastT0Unique = run.LastT0Unique,
             ExcludedFromStatistics = run.ExcludedFromStatistics,
+            Favorite = run.Favorite,
+            WipeObserved = run.WipeObserved,
+            FailureOverride = run.FailureOverride,
             ValdosDropped = valdos,
             Pricing = run.Pricing
         };
@@ -350,6 +362,7 @@ internal sealed partial class MapHistory
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly LootScope[] LootScopes = Enum.GetValues<LootScope>();
     private readonly string _directory;
+    private readonly Action<string> _logError;
     private readonly IReadOnlySet<string> _uniqueBeltNames;
     private readonly Func<string, bool> _isT0Unique;
     private readonly object _gate = new();
@@ -357,20 +370,28 @@ internal sealed partial class MapHistory
     private Dictionary<Guid, MapSummary> _indexWithUniques = [];
     private readonly Dictionary<Guid, LootCounts[]> _sessionLoot = [];
     private readonly Dictionary<Guid, LiveMapEdits> _liveMapEdits = [];
-    private readonly Dictionary<(Guid, LootScope), SessionDrops> _sessionDrops = [];
+    private readonly Dictionary<(Guid, LootScope, bool), SessionDrops> _sessionDrops = [];
     private readonly HashSet<Guid> _pendingPriceRuns = [];
+    private readonly HashSet<Guid> _deletedRuns;
     private SessionBook _sessions;
     private HashSet<string> _ignoredItems;
 
     public MapHistory(string directory, Action<string> logError, IReadOnlySet<string> uniqueBeltNames = null,
         Func<string, bool> isT0Unique = null, WidgetSettings widgetDefaults = null,
-        IReadOnlyDictionary<string, string> archivedUniqueTypes = null)
+        IReadOnlyDictionary<string, string> archivedUniqueTypes = null,
+        int failUniqueThreshold = MapFailureRules.DefaultUniqueThreshold)
     {
         _directory = directory;
+        _logError = logError;
+        _failUniqueThreshold = failUniqueThreshold;
         _uniqueBeltNames = uniqueBeltNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _isT0Unique = isT0Unique;
         _archivedUniqueTypes = archivedUniqueTypes ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Directory.CreateDirectory(_directory);
+        _deletedRuns = File.Exists(DeletedRunsPath)
+            ? JsonSerializer.Deserialize<HashSet<Guid>>(File.ReadAllBytes(DeletedRunsPath), Json) ??
+              throw new JsonException("Empty deleted-map archive")
+            : [];
         _sessions = LoadSessions(logError);
         if (!_sessions.LegacyMapPriceDivine.HasValue)
             SaveSessions(_sessions with { LegacyMapPriceDivine = DefaultMapPriceDivine });
@@ -381,6 +402,11 @@ internal sealed partial class MapHistory
             try
             {
                 var run = Read(file);
+                if (_deletedRuns.Contains(run.Id))
+                {
+                    DeleteRecordFile(file);
+                    continue;
+                }
                 if (MapAreaRules.IsExcludedFromMaps(run.Name))
                     continue;
                 if (run.State is "active" or "paused")
@@ -428,21 +454,24 @@ internal sealed partial class MapHistory
                     "Первая сессия" => session with { Name = "First session" },
                     "До последнего сброса" => session with { Name = "Before last reset" },
                     _ => session
-                }).ToArray(), _sessions.IgnoredItems ?? [], _sessions.GetMinimumPrice(), _sessions.MapCosts ?? new MapCostSettings());
+                }).ToArray(), _sessions.IgnoredItems ?? [], _sessions.GetMinimumPrice(), _sessions.MapCosts ?? new MapCostSettings(),
+                _failUniqueThreshold);
     }
 
-    public SessionDrops GetSessionDrops(Guid? sessionId = null, LootScope scope = LootScope.All)
+    public SessionDrops GetSessionDrops(Guid? sessionId = null, LootScope scope = LootScope.All, bool favoritesOnly = false)
     {
         lock (_gate)
         {
-            var id = sessionId ?? _sessions.ActiveId;
+            var id = favoritesOnly ? Guid.Empty : sessionId ?? _sessions.ActiveId;
             if (id != Guid.Empty && !_sessions.Sessions.Any(session => session.Id == id))
                 return null;
-            if (_sessionDrops.TryGetValue((id, scope), out var cached))
+            var cacheKey = (id, scope, favoritesOnly);
+            if (_sessionDrops.TryGetValue(cacheKey, out var cached))
                 return cached;
 
             var maps = _sessionLoot.Keys.Select(runId => _index[runId])
                 .Where(map => !map.ExcludedFromStatistics && (id == Guid.Empty || map.SessionId == id))
+                .Where(map => !favoritesOnly || map.Favorite)
                 .OrderByDescending(map => map.StartedUtc).ToArray();
             var lastMap = maps.FirstOrDefault(map => map.State != "active");
             var minimumPrice = _sessions.GetMinimumPrice();
@@ -469,7 +498,7 @@ internal sealed partial class MapHistory
                 entry.Value.Count, entry.Value.LastMapCount, entry.Value.ValueDivine, entry.Value.LastMapValueDivine,
                 entry.Value.PricedCount)).ToArray();
             var league = maps.FirstOrDefault(map => !string.IsNullOrWhiteSpace(map.League))?.League;
-            return _sessionDrops[(id, scope)] = new SessionDrops(maps.Length, league, lastMap?.Name, items);
+            return _sessionDrops[cacheKey] = new SessionDrops(maps.Length, league, lastMap?.Name, items);
         }
     }
 
@@ -562,9 +591,10 @@ internal sealed partial class MapHistory
         };
     }
 
-    private sealed record LiveMapEdits(Dictionary<Guid, LootEdit> Loot, bool? Failed, bool Excluded, double? Price)
+    private sealed record LiveMapEdits(Dictionary<Guid, LootEdit> Loot, bool? Failed, bool Excluded, double? Price, bool Favorite)
     {
-        public static LiveMapEdits FromRun(MapRun run) => new(run.Edits, run.FailureOverride, run.ExcludedFromStatistics, run.MapPriceDivine);
+        public static LiveMapEdits FromRun(MapRun run) => new(run.Edits, run.FailureOverride, run.ExcludedFromStatistics,
+            run.MapPriceDivine, run.Favorite);
     }
 
     public Guid StartNewSession()
@@ -641,10 +671,10 @@ internal sealed partial class MapHistory
         foreach (var (id, existing) in _index)
         {
             var run = Read(FilePath(id));
-            standard[id] = MapSummary.FromRun(run, false, names, minimumPrice, existing.UniqueBeltsDropped, existing.ThreadUsage)
+            standard[id] = MapSummary.FromRun(run, false, names, minimumPrice, existing.UniqueBeltsDropped, existing.ThreadUsage, _failUniqueThreshold)
                 with { SessionId = existing.SessionId, T0UniquesDropped = existing.T0UniquesDropped, LastT0Unique = existing.LastT0Unique,
                     DropBonuses = existing.DropBonuses };
-            withUniques[id] = MapSummary.FromRun(run, true, names, minimumPrice, existing.UniqueBeltsDropped, existing.ThreadUsage)
+            withUniques[id] = MapSummary.FromRun(run, true, names, minimumPrice, existing.UniqueBeltsDropped, existing.ThreadUsage, _failUniqueThreshold)
                 with { SessionId = existing.SessionId, T0UniquesDropped = existing.T0UniquesDropped, LastT0Unique = existing.LastT0Unique,
                     DropBonuses = existing.DropBonuses };
         }
@@ -670,6 +700,8 @@ internal sealed partial class MapHistory
 
         lock (_gate)
         {
+            if (_deletedRuns.Contains(run.Id))
+                return;
             Write(run);
             Index(run);
         }
@@ -694,6 +726,58 @@ internal sealed partial class MapHistory
         run.FailureOverride = failed;
         return true;
     });
+
+    public bool EditFavorite(Guid id, bool favorite) => Edit(id, run =>
+    {
+        run.Favorite = favorite;
+        return true;
+    }, touchTimestamp: false);
+
+    public bool IsDeleted(Guid id)
+    {
+        lock (_gate)
+            return _deletedRuns.Contains(id);
+    }
+
+    public bool DeleteMap(Guid id)
+    {
+        lock (_gate)
+        {
+            if (_deletedRuns.Contains(id))
+                return true;
+            if (!_index.ContainsKey(id))
+                return false;
+
+            // Commit the deletion before touching the map file so a checkpoint or import cannot restore it.
+            WriteAtomic(DeletedRunsPath, _deletedRuns.Append(id).ToArray());
+            _deletedRuns.Add(id);
+            _index.Remove(id);
+            _indexWithUniques.Remove(id);
+            _sessionLoot.Remove(id);
+            _uniqueDrops.Remove(id);
+            _liveMapEdits.Remove(id);
+            _pendingPriceRuns.Remove(id);
+            _sessionDrops.Clear();
+            _widgetSessionStats = null;
+
+            DeleteRecordFile(FilePath(id));
+            if (_widgetContext != null)
+                PublishWidget(_widgetContext);
+            return true;
+        }
+    }
+
+    private void DeleteRecordFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logError($"Could not remove deleted map file {Path.GetFileName(path)}. Will retry on startup. {ex.Message}");
+        }
+    }
 
     public bool EditStatisticsExclusion(Guid id, bool excluded)
     {
@@ -823,6 +907,8 @@ internal sealed partial class MapHistory
     {
         lock (_gate)
         {
+            if (_deletedRuns.Contains(run.Id))
+                return;
             if (!_liveMapEdits.TryGetValue(run.Id, out var edits) && Get(run.Id) is { } saved)
                 edits = LiveMapEdits.FromRun(saved);
             if (edits != null)
@@ -831,6 +917,7 @@ internal sealed partial class MapHistory
                 run.FailureOverride = edits.Failed;
                 run.ExcludedFromStatistics = edits.Excluded;
                 run.MapPriceDivine = edits.Price;
+                run.Favorite = edits.Favorite;
             }
             Save(run);
         }
@@ -843,7 +930,8 @@ internal sealed partial class MapHistory
         else
             _liveMapEdits.Remove(run.Id);
         var sessionId = ResolveSession(run);
-        if (run.State != "active" || _index.TryGetValue(run.Id, out var old) && old.State != "active")
+        var previous = _index.GetValueOrDefault(run.Id);
+        if (run.State != "active" || previous is { State: not "active" })
             _widgetSessionStats = null;
         var minimumPrice = _sessions.GetMinimumPrice();
         var beltDrops = CountUniqueBelts(run);
@@ -862,9 +950,9 @@ internal sealed partial class MapHistory
         }
         var dropBonuses = MapDropBonuses.Read(run);
         var pricing = run.Pricing ?? LegacyPricing();
-        _index[run.Id] = MapSummary.FromRun(run, false, _ignoredItems, minimumPrice, beltDrops, threadUsage)
+        _index[run.Id] = MapSummary.FromRun(run, false, _ignoredItems, minimumPrice, beltDrops, threadUsage, _failUniqueThreshold)
             with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses, Pricing = pricing };
-        _indexWithUniques[run.Id] = MapSummary.FromRun(run, true, _ignoredItems, minimumPrice, beltDrops, threadUsage)
+        _indexWithUniques[run.Id] = MapSummary.FromRun(run, true, _ignoredItems, minimumPrice, beltDrops, threadUsage, _failUniqueThreshold)
             with { SessionId = sessionId, T0UniquesDropped = t0, LastT0Unique = lastT0, DropBonuses = dropBonuses, Pricing = pricing };
         _uniqueDrops[run.Id] = IndexUniqueDrops(run);
         if (run.State is not ("active" or "paused" or "legacy") && pricing.SnapshotUtc == null &&
@@ -879,8 +967,10 @@ internal sealed partial class MapHistory
                 LootPrice.FromItem(run, item))).ToArray();
         foreach (var scope in LootScopes)
         {
-            _sessionDrops.Remove((sessionId.Value, scope));
-            _sessionDrops.Remove((Guid.Empty, scope));
+            _sessionDrops.Remove((sessionId.Value, scope, false));
+            _sessionDrops.Remove((Guid.Empty, scope, false));
+            if (run.Favorite || previous?.Favorite == true)
+                _sessionDrops.Remove((Guid.Empty, scope, true));
         }
     }
 
@@ -950,6 +1040,7 @@ internal sealed partial class MapHistory
 
     private string SessionStartPath => Path.Combine(_directory, "session-start");
     private string SessionsPath => Path.Combine(_directory, "sessions");
+    private string DeletedRunsPath => Path.Combine(_directory, "deleted-maps");
     private string FilePath(Guid id) => Path.Combine(_directory, $"{id:N}.json");
 
     private static MapRun Read(string file)

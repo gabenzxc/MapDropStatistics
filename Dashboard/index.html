@@ -128,7 +128,14 @@
       </section>
       <section class="panel details" aria-labelledby="detail-name">
         <div class="section-heading">
-          <div><h2 id="detail-name">Map details</h2><p id="detail-meta" class="muted"></p><div id="detail-zones" class="zone-tags" hidden></div></div>
+          <div>
+            <div class="detail-map-title">
+              <h2 id="detail-name">Map details</h2>
+              <button type="button" id="toggle-map-favorite" class="plain map-favorite-toggle" aria-label="Favorite map" aria-pressed="false" hidden>☆</button>
+            </div>
+            <p id="detail-meta" class="muted"></p>
+            <div id="detail-zones" class="zone-tags" hidden></div>
+          </div>
           <div id="detail-profit" class="detail-profit" hidden>
             <div>
               <span class="muted" id="detail-profit-label">Pickup value</span><strong id="detail-value" class="value"></strong>
@@ -160,6 +167,7 @@
             <div class="map-detail-actions">
               <label class="outcome">Failed <select id="failure"><option value="auto">Automatic</option><option value="yes">Yes</option><option value="no">No</option></select></label>
               <label class="check"><input id="map-include-statistics" type="checkbox" checked> Include in statistics</label>
+              <button id="open-delete-map" type="button" class="button danger">Delete map</button>
             </div>
           </div>
           <div id="loot-tools" class="loot-tools">
@@ -280,6 +288,18 @@
       </div>
     </section>
   </main>
+  <dialog id="delete-map-dialog" aria-labelledby="delete-map-title">
+    <form id="delete-map-form">
+      <h2 id="delete-map-title">Delete map?</h2>
+      <p id="delete-map-record"></p>
+      <p class="muted">This removes the record and its loot from map history.</p>
+      <p id="delete-map-status" class="form-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="cancel-delete-map" class="button" type="button" data-close-dialog="delete-map-dialog" autofocus>Cancel</button>
+        <button id="confirm-delete-map" class="button danger" type="submit">Delete map</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="edit-dialog">
     <form id="edit-form">
       <div class="section-heading"><h2>Item valuation</h2><button class="plain" id="close-edit" type="button" aria-label="Close">×</button></div>

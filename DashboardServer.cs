@@ -256,7 +256,7 @@ internal sealed class DashboardServer : IDisposable
             {
                 var selection = request.QueryString["session"];
                 var pickup = request.QueryString["pickup"];
-                if ((selection is not (null or "all") && !Guid.TryParse(selection, out _)) ||
+                if ((selection is not (null or "all" or "favorites") && !Guid.TryParse(selection, out _)) ||
                     pickup is not (null or "all" or "personal" or "party"))
                 {
                     response.StatusCode = 400;
@@ -268,7 +268,13 @@ internal sealed class DashboardServer : IDisposable
                     "party" => LootScope.Party,
                     _ => LootScope.All
                 };
-                var session = _history.GetSessionDrops(selection == null ? null : selection == "all" ? Guid.Empty : Guid.Parse(selection), scope);
+                var id = selection switch
+                {
+                    null => (Guid?)null,
+                    "all" or "favorites" => Guid.Empty,
+                    _ => Guid.Parse(selection)
+                };
+                var session = _history.GetSessionDrops(id, scope, favoritesOnly: selection == "favorites");
                 if (session == null)
                 {
                     response.StatusCode = 404;
@@ -355,6 +361,18 @@ internal sealed class DashboardServer : IDisposable
         {
             var excluded = await JsonSerializer.DeserializeAsync<bool>(request.InputStream, MapHistory.Json).ConfigureAwait(false);
             response.StatusCode = _history.EditStatisticsExclusion(mapId, excluded) ? 204 : 404;
+            return;
+        }
+        if (parts.Length == 4 && parts[3] == "favorite")
+        {
+            var favorite = await JsonSerializer.DeserializeAsync<bool>(request.InputStream, MapHistory.Json).ConfigureAwait(false);
+            response.StatusCode = _history.EditFavorite(mapId, favorite) ? 204 : 404;
+            return;
+        }
+        if (parts.Length == 4 && parts[3] == "delete")
+        {
+            var confirmed = await JsonSerializer.DeserializeAsync<bool>(request.InputStream, MapHistory.Json).ConfigureAwait(false);
+            response.StatusCode = !confirmed ? 400 : _history.DeleteMap(mapId) ? 204 : 404;
             return;
         }
         if (parts.Length == 4 && parts[3] == "map-price")

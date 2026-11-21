@@ -826,7 +826,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             return false;
 
         var name = area.Name ?? string.Empty;
-        return !MapAreaRules.IsExcludedFromMaps(name) && !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
+        return !MapAreaRules.IsExcludedFromMaps(name, area.Area?.Id) && !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
     }
 
     private static string GetAreaKey(AreaInstance area)
@@ -860,7 +860,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         if (!IsSaveLockedArea(_currentAreaName))
             _trackedDropWindowStats.AddMap();
 
-        var isFailMap = _currentAreaStats.UniqueItems < Settings.Tracking.FailUniqueThreshold;
+        var isFailMap = MapFailureRules.IsFailed("recorded", _activeRun?.FailureOverride, _activeRun?.WipeObserved == true,
+            _currentAreaStats.UniqueItems, Settings.Tracking.FailUniqueThreshold.Value);
         if (isFailMap && !IsSaveLockedArea(_currentAreaName))
             _sessionStats.AddFail();
 
@@ -1429,11 +1430,14 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         if (!Settings.Actions.SaveMapStats && !IsSaveLockedArea(_currentAreaName))
             return;
+        if (_activeRun is { } run && _history?.IsDeleted(run.Id) == true)
+            return;
 
         PrunePendingDrops();
 
         var payload = new AreaDump
         {
+            HistoryMapId = _activeRun?.Id,
             AreaName = _currentAreaName,
             AreaKey = _currentAreaKey,
             SavedAtUtc = DateTime.UtcNow,

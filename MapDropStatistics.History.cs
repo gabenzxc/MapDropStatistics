@@ -66,7 +66,8 @@ public partial class MapDropStatistics
             var beltNames = uniqueTypes.Where(entry => entry.Value == "Belts").Select(entry => entry.Key)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             _history = new MapHistory(Path.Combine(root, "MapHistory"), message => LogError(message), beltNames,
-                IsT0Unique, GetWidgetDefaults(), uniqueTypes);
+                IsT0Unique, GetWidgetDefaults(), uniqueTypes, Settings.Tracking.FailUniqueThreshold.Value);
+            Settings.Tracking.FailUniqueThreshold.OnValueChanged += (_, value) => _history.SetFailUniqueThreshold(value);
             _priceArchive = new MarketPriceArchive(Path.Combine(root, "MarketPrices"), GetPricerCacheRoot,
                 message => LogError(message));
             UpdatePricingStatus();
@@ -116,13 +117,23 @@ public partial class MapDropStatistics
         foreach (var path in _savedMapStatFiles)
         {
             var id = MapHistory.LegacyId(Path.GetFileName(path));
+            if (_history.IsDeleted(id))
+                continue;
             try
             {
                 var legacy = JsonSerializer.Deserialize<AreaDump>(File.ReadAllText(path));
-                if (legacy == null)
+                if (legacy == null || MapAreaRules.IsExcludedFromMaps(legacy.AreaName))
+                    continue;
+                if (legacy.HistoryMapId is { } linkedId && _history.IsDeleted(linkedId))
                     continue;
                 var totals = new MapDropTotals(legacy.CurrencyQuantity, legacy.UniqueItems,
                     legacy.NormalBaseItems, legacy.MagicBaseItems, legacy.RareBaseItems);
+                if (legacy.HistoryMapId is { } historyId && _history.GetSummary(historyId) != null)
+                {
+                    _history.FillSavedCounters(historyId, totals, legacy.FinalMoreCurrency, legacy.FinalMoreMaps,
+                        legacy.FinalMoreScarabs, legacy.T0UniqueItems);
+                    continue;
+                }
                 var matching = trackedMaps.Where(map => map.Name == legacy.AreaName &&
                     map.Quantity == legacy.FinalItemQuantity && map.Rarity == legacy.FinalItemRarity &&
                     map.PackSize == legacy.FinalPackSize && Math.Abs((map.UpdatedUtc - legacy.SavedAtUtc).TotalSeconds) < 3)

@@ -540,6 +540,7 @@ public partial class MapDropStatistics
 
     private sealed class AreaDump
     {
+        public Guid? HistoryMapId { get; set; }
         public string AreaName { get; set; } = string.Empty;
         public string AreaKey { get; set; } = string.Empty;
         public DateTime SavedAtUtc { get; set; }

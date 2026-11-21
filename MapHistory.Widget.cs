@@ -159,7 +159,8 @@ internal sealed partial class MapHistory
             var statNames = new[] { "Divine Orb", "Valdo's Puzzle Box" }.Concat(names).ToArray();
             var totals = GetWidgetSessionStats(sessionId, statNames);
             var current = mapId is { } id ? CurrentIndex.GetValueOrDefault(id) : null;
-            var mapExcluded = current?.ExcludedFromStatistics == true;
+            var mapExcluded = current?.ExcludedFromStatistics == true ||
+                (mapId.HasValue && _deletedRuns.Contains(mapId.Value));
             if (mapExcluded)
             {
                 current = null;

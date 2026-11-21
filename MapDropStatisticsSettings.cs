@@ -32,7 +32,8 @@ public class TrackingSettings
     public ToggleNode IncludeEmptyAreasInAverage { get; set; } = new(false);
     [IgnoreMenu]
     public ToggleNode ShowWhenNotTrackingArea { get; set; } = new(true);
-    public RangeNode<int> FailUniqueThreshold { get; set; } = new(1000, 0, 20000);
+    [Menu("Fail unique threshold", "Automatically marks a finished map as failed when this many uniques or fewer dropped.")]
+    public RangeNode<int> FailUniqueThreshold { get; set; } = new(MapFailureRules.DefaultUniqueThreshold, 0, 20000);
     public ToggleNode CountFailMapToStatistic { get; set; } = new(true);
     [IgnoreMenu]
     public ContentNode<TextNode> CustomTrackedCurrencyItems { get; set; } = new()
