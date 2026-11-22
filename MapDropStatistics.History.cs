@@ -280,7 +280,7 @@ public partial class MapDropStatistics
             : null;
         _seenAltars.Clear();
         _recordedEncounterSignals.Clear();
-        _nextEncounterPanelRead = 0;
+        ResetEncounterProgress();
         MarkEncounterArea(area, startsRun: true);
         _runLoot.Clear();
         _groundDrops.Clear();
@@ -293,6 +293,7 @@ public partial class MapDropStatistics
         _nextPriceRead = 0;
         _nextModifierRead = 0;
         ResetPickupObservations();
+        ResetMonsterCounting();
     }
 
     private void PauseRun()
@@ -331,11 +332,13 @@ public partial class MapDropStatistics
 
         var now = Environment.TickCount64;
         UpdateEncounterTracking(now);
+        ObserveMonsterKills(now);
         if (now >= _nextModifierRead)
         {
             _nextModifierRead = now + 1000;
             CaptureRunModifiers();
         }
+        UpdateEncounterProgress(now);
         if (now >= _nextPickupPoll)
         {
             _nextPickupPoll = now + PickupPollMs;
@@ -530,12 +533,24 @@ public partial class MapDropStatistics
     {
         try
         {
-            if (_activeRun == null || !_trackingCurrentArea || entity == null ||
-                !_groundDrops.TryGetValue(entity.Id, out var drop) || _resolvedGroundDrops.Contains(entity.Id) ||
+            if (_activeRun == null || !_trackingCurrentArea || entity == null)
+                return;
+
+            var possibleKill = _livingMonsters.Contains(entity.Id);
+            var hasEncounter = _progressEncounters.TryGetValue(entity.Id, out var encounter);
+            var possiblePickup = _groundDrops.TryGetValue(entity.Id, out var drop) &&
+                !_resolvedGroundDrops.Contains(entity.Id) && (entity.Address == 0 || drop.Address == entity.Address);
+            if ((!possibleKill && !possiblePickup && !hasEncounter) ||
                 GameController.IsLoading ||
                 GameController.Game.AreaChangeCount != _lastAreaChangeCount ||
-                !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true) ||
-                (entity.Address != 0 && drop.Address != entity.Address))
+                !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true))
+                return;
+
+            if (hasEncounter)
+                ReadEncounterState(encounter);
+            if (possibleKill && entity.IsValid && entity.Type == EntityType.Monster)
+                ObserveMonsterKill(entity);
+            if (!possiblePickup)
                 return;
 
             var local = GameController.Player;

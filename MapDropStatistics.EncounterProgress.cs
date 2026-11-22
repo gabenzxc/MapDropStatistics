@@ -1,0 +1,118 @@
+using System.Collections.Generic;
+using System.Linq;
+using ExileCore.PoEMemory.Components;
+using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared.Enums;
+
+namespace MapDropStatistics;
+
+public partial class MapDropStatistics
+{
+    private readonly Dictionary<uint, ObservedEncounter> _progressEncounters = [];
+    private long _nextEncounterProgressRead;
+    private long _nextDeliriumRewardRead;
+    private bool _deliriumRewardStarted;
+
+    private sealed class ObservedEncounter(ProgressEncounter kind, Entity entity)
+    {
+        public ProgressEncounter Kind { get; } = kind;
+        public Entity Entity { get; set; } = entity;
+        public bool Complete { get; set; }
+    }
+
+    private void ResetEncounterProgress()
+    {
+        _progressEncounters.Clear();
+        _nextEncounterProgressRead = 0;
+        _nextDeliriumRewardRead = 0;
+        _deliriumRewardStarted = false;
+    }
+
+    private void ObserveProgressEncounter(Entity entity, string metadata)
+    {
+        var kind = EncounterProgressRules.Identify(metadata);
+        if (kind == ProgressEncounter.None || entity.Id == 0)
+            return;
+
+        if (_progressEncounters.TryGetValue(entity.Id, out var observed) && observed.Kind == kind)
+            observed.Entity = entity;
+        else
+            _progressEncounters[entity.Id] = observed = new ObservedEncounter(kind, entity);
+        ReadEncounterState(observed);
+    }
+
+    private static void ReadEncounterState(ObservedEncounter observed)
+    {
+        var entity = observed.Entity;
+        if (observed.Complete || !entity.IsValid)
+            return;
+
+        long? state = observed.Kind == ProgressEncounter.Abyss
+            ? entity.GetComponent<Transitionable>()?.Flag1
+            : entity.GetComponent<StateMachine>()?.States?
+                .FirstOrDefault(state => state.Name == EncounterProgressRules.SharedState(observed.Kind))?.Value;
+        if (state.HasValue)
+            observed.Complete = EncounterProgressRules.IsComplete(observed.Kind, state.Value);
+    }
+
+    private void UpdateEncounterProgress(long now)
+    {
+        if (now < _nextEncounterProgressRead)
+            return;
+        _nextEncounterProgressRead = now + 250;
+
+        if (!_deliriumRewardStarted && now >= _nextDeliriumRewardRead)
+        {
+            _nextDeliriumRewardRead = now + 1000;
+            var rewards = GameController.IngameState.ServerData?.DeliriumRewards;
+            if (rewards?.Any(reward => reward.TargetProgress > 0 && !string.IsNullOrEmpty(reward.Type?.Id)) == true)
+            {
+                MarkEncounterZone("delirium");
+                RecordEncounterSignal("Area state", "Delirium reward progress available");
+            }
+            _deliriumRewardStarted = rewards?.Any(reward => (reward.Count > 0 || reward.CurrentProgress > 0) &&
+                !string.IsNullOrEmpty(reward.Type?.Id)) == true;
+        }
+
+        var legionSeen = 0;
+        var legionClosed = 0;
+        var abyssSeen = 0;
+        var abyssClosed = 0;
+        var mirageActivated = _lastRunModifiers.GetValueOrDefault(GameStat.MapMirageChosenWishIndex1ForLogging)?.Value > 0;
+        var deliriumStarted = _deliriumRewardStarted ||
+            _lastRunModifiers.GetValueOrDefault(GameStat.MapHasAfflictionEverywhere)?.Value > 0;
+        foreach (var encounter in _progressEncounters.Values)
+        {
+            ReadEncounterState(encounter);
+            switch (encounter.Kind)
+            {
+                case ProgressEncounter.Legion or ProgressEncounter.EndlessLegion:
+                    legionSeen++;
+                    if (encounter.Complete)
+                        legionClosed++;
+                    break;
+                case ProgressEncounter.Abyss:
+                    abyssSeen++;
+                    if (encounter.Complete)
+                        abyssClosed++;
+                    break;
+                case ProgressEncounter.Mirage:
+                    mirageActivated |= encounter.Complete;
+                    break;
+                case ProgressEncounter.Delirium:
+                    deliriumStarted |= encounter.Complete;
+                    break;
+            }
+        }
+
+        if (legionSeen == 0 && abyssSeen == 0 && !mirageActivated && !deliriumStarted)
+            return;
+
+        var progress = new MapEncounterProgress(legionSeen, legionClosed, abyssSeen, abyssClosed, mirageActivated, deliriumStarted);
+        if (progress != _activeRun.EncounterProgress)
+        {
+            _activeRun.EncounterProgress = progress;
+            _nextRunSave = 0;
+        }
+    }
+}

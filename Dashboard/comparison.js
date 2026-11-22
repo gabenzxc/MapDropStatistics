@@ -34,7 +34,7 @@
     const labels = sessions.map(session => `${session.id === activeId ? "Current · " : ""}${session.name ?? dateLabel(session.startedUtc)}`);
     for (const select of selected) {
       if (select.options.length !== sessions.length || sessions.some((session, index) =>
-        select.options[index].value !== session.id || select.options[index].text !== labels[index])) {
+        select.options[index].value !== session.id || select.options[index].textContent !== labels[index])) {
         const value = select.value;
         select.replaceChildren(...sessions.map((session, index) => new Option(labels[index], session.id)));
         select.value = value;
@@ -422,6 +422,7 @@
   function renderUniqueComparison() {
     const target = $("compare-unique-content");
     const results = pairResults("uniques", "unique drops", "compare-unique-status", target);
+    renderUniqueTierComparison(results);
     if (!results) return;
     target.replaceChildren();
 
@@ -482,6 +483,43 @@
     scroll.append(table);
     target.append(scroll);
   }
+
+  function renderUniqueTierComparison(results) {
+    const target = $("compare-tier-content");
+    $("download-unique-tiers").hidden = !results;
+    set("compare-tier-status", results ? "" : $("compare-unique-status").textContent);
+    target.replaceChildren();
+    if (!results) return;
+
+    const [a, b] = results.map(uniqueTierTotals);
+    const list = element("ul", null, "compare-share-list");
+    for (const [index, label] of uniqueTierLabels.entries()) {
+      const row = element("li", null, "compare-share-row");
+      const tier = element("span", label, "unique-tier");
+      if (label !== "Unknown") tier.dataset.tier = index;
+      row.append(tier, shareBar(a[index], b[index], value => number.format(value)));
+      list.append(row);
+    }
+    target.append(list);
+  }
+
+  $("download-unique-tiers").addEventListener("click", () => {
+    const results = selected.map(select => requests.uniques?.byId?.get(select.value));
+    if (results.some(result => !result)) return;
+
+    const [a, b] = results.map(uniqueTierTotals);
+    const header = ["Tier", ...selected.map((select, index) =>
+      `Session ${sides[index].toUpperCase()} · ${select.selectedOptions[0].textContent}`), "Total"];
+    const rows = uniqueTierLabels.map((tier, index) => [tier, a[index], b[index], a[index] + b[index]]);
+    const csv = [header, ...rows].map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(","))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
+    const link = element("a");
+    link.href = url;
+    link.download = "unique-tiers-comparison.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
 
   function showComparison(show) {
     view.hidden = !show;

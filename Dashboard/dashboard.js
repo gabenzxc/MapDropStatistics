@@ -28,6 +28,7 @@ const uniqueSortOrders = {
   type: ["type", "ascending"], "type-reverse": ["type", "descending"],
   name: ["name", "ascending"], "name-reverse": ["name", "descending"]
 };
+const uniqueTierLabels = ["T0", "T1", "T2", "T3", "T4", "T5", "Unknown"];
 let latestRequest = 0;
 let hoverIndex = -1;
 let chartPoints = [];
@@ -206,6 +207,11 @@ async function refresh(force = false) {
   }
 }
 
+function selectedHistorySession() {
+  const id = state.sessionView === "active" ? state.sessions?.activeId : state.sessionView;
+  return state.sessions?.sessions.find(session => session.id === id);
+}
+
 function renderSessionControls() {
   const select = $("session-view");
   const current = state.sessions.sessions.find(session => session.id === state.sessions.activeId);
@@ -213,10 +219,12 @@ function renderSessionControls() {
   const currentLabel = current ? `Current · ${current.name ?? dateLabel(current.startedUtc)}` : "Current session";
   const options = [[currentLabel, "active"], ...archive.map(session =>
     [session.name ?? `Session · ${dateLabel(session.startedUtc)}`, session.id]), ["All history", "all"], ["Favorites", "favorites"]];
-  if (Array.from(select.options).map(option => option.value).join("|") !== options.map(option => option[1]).join("|"))
+  if (select.options.length !== options.length || options.some(([label, value], index) =>
+    select.options[index].value !== value || select.options[index].textContent !== label))
     select.replaceChildren(...options.map(([label, value]) => new Option(label, value)));
   if (!options.some(option => option[1] === state.sessionView)) state.sessionView = "active";
   select.value = state.sessionView;
+  $("open-rename-session").hidden = !selectedHistorySession();
   $("resume-session").hidden = !archive.some(session => session.id === state.sessionView);
   $("unique-prices").checked = state.sessions.includeUniquePrices;
   const threshold = state.sessions.failUniqueThreshold;
@@ -283,7 +291,17 @@ function renderWidgetPreview() {
     const line = element("div", null, row.inline ? "widget-row widget-inline-row" : "widget-row");
     line.style.setProperty("--widget-accent", `#${row.accentRgb.toString(16).padStart(6, "0")}`);
     line.append(element("dt", row.label), element("dd", row.current, row.current === "—" ? "widget-empty-value" : ""));
-    if (!row.inline) line.append(element("dd", row.session ?? "", "widget-session-value"));
+    if (!row.inline) {
+      const column = element("dd", row.session ?? "", "widget-session-value");
+      if (row.progress?.found > 0) {
+        const bar = element("progress", null, "widget-encounter-progress");
+        bar.max = row.progress.found;
+        bar.value = row.progress.completed;
+        bar.setAttribute("aria-label", `${row.label} completed`);
+        column.append(bar);
+      }
+      line.append(column);
+    }
     list.append(line);
   }
   preview.append(element("strong", data.area), list);
@@ -771,8 +789,7 @@ function renderDetail() {
     ...(map.t0UniquesDropped > 0 ? [["T0 Uniques", number.format(map.t0UniquesDropped), map.lastT0Unique]] : []),
     ...(map.deaths > 0 ? [["Deaths", number.format(map.deaths),
       `You ${number.format(map.deaths - map.partyDeaths)} · Party ${number.format(map.partyDeaths)}`]] : []),
-    ...(kills == null ? [] : [["Monster kills", number.format(map.monsterKills),
-      run.killDiagnostics == null ? "Recorded by the previous counter" : "Observed monster deaths in this area"]])
+    ...(kills == null ? [] : [["Monster kills", number.format(map.monsterKills), "Observed monster deaths in this area"]])
   ];
   $("map-stats").replaceChildren(...mapStats.map(([label, value, tooltip]) => {
     const stat = element("span", label);
@@ -782,7 +799,6 @@ function renderDetail() {
     if (tooltip) stat.title = tooltip;
     return stat;
   }));
-  renderKillDiagnostics(run, kills);
   renderRunTotals(run, map, minimumDivine);
   $("failure").value = run.failureOverride == null ? "auto" : run.failureOverride ? "yes" : "no";
   $("map-include-statistics").checked = includedInStatistics(map);
@@ -1010,6 +1026,35 @@ function uniqueDropsFor(maps, includeExcluded) {
   return selection;
 }
 
+function uniqueTierTotals(result) {
+  const unknown = uniqueTierLabels.length - 1;
+  const counts = uniqueTierLabels.map(() => 0);
+  let detailed = 0;
+  for (const { tier, dropped } of result.items) {
+    if (dropped <= 0) continue;
+    const index = Number.isInteger(tier) && tier >= 0 && tier < unknown ? tier : unknown;
+    counts[index] += dropped;
+    detailed += dropped;
+  }
+  counts[unknown] += Math.max(0, (result.dropped ?? 0) - detailed);
+  return counts;
+}
+
+function renderUniqueTierTotals(result) {
+  const section = element("section", null, "unique-tier-summary");
+  section.append(element("h3", "Drops by tier"));
+  const list = element("dl", null, "mod-bonuses");
+  const counts = uniqueTierTotals(result);
+  for (const [index, tier] of uniqueTierLabels.entries()) {
+    if (tier === "Unknown" && counts[index] === 0) continue;
+    const stat = element("div", null, "mod-bonus");
+    stat.append(element("dt", tier), element("dd", number.format(counts[index])));
+    list.append(stat);
+  }
+  section.append(list);
+  return section;
+}
+
 function renderUniques() {
   if (state.tab !== "uniques" || !state.detail) return;
   const parent = $("details-body");
@@ -1062,6 +1107,7 @@ function renderUniques() {
   reference.rel = "noopener noreferrer";
   header.append(summary, reference);
   parent.append(header);
+  parent.append(renderUniqueTierTotals(result));
   if (total > count)
     parent.append(element("p", `${number.format(total - count)} drops have no saved item details.`, "muted"));
   if (!shown.length) {
@@ -1120,48 +1166,6 @@ function renderEncounterDiagnostics(parent, signals) {
   }
   details.append(list);
   parent.append(details);
-}
-
-function renderKillDiagnostics(run, kills) {
-  const diagnostics = run.killDiagnostics;
-  $("kill-diagnostics").hidden = diagnostics == null && run.kills == null;
-  const body = $("kill-diagnostics-body");
-  body.replaceChildren();
-  if (!diagnostics) {
-    if (run.kills != null)
-      body.append(element("p", "This map stored totals from the previous counter. Individual entities were not recorded."));
-    return;
-  }
-
-  if (kills?.encounterUnique)
-    body.append(element("p", `Encounter Unique candidates · ${number.format(kills.encounterUnique)}`));
-  const reclassified = (run.kills?.unique ?? 0) - (kills?.unique ?? 0);
-  const excluded = diagnostics.usesEncounterFilter ? diagnostics.ignoredAuxiliaryDeaths :
-    reclassified - (kills?.encounterUnique ?? 0);
-  if (excluded > 0)
-    body.append(element("p", `Excluded effects and encounter proxies · ${number.format(excluded)}`));
-  if (reclassified > 0)
-    body.append(element("p", "This archive lists the original verdicts for its individual samples."));
-
-  body.append(element("p", `Unconfirmed candidates · ${number.format(diagnostics.rejectedCandidates)}`));
-  if (!diagnostics.uniqueSamples.length) {
-    body.append(element("p", "No Unique candidates recorded yet."));
-    return;
-  }
-  const list = element("ul", null, "kill-samples");
-  for (const sample of diagnostics.uniqueSamples) {
-    const time = signalTime.format(new Date(sample.seenUtc));
-    const entry = element("li");
-    entry.append(element("strong", `${sample.result} · ${sample.name || "Unknown monster"} #${sample.id}`));
-    if (sample.metadata) entry.append(element("small", sample.metadata));
-    entry.append(element("small", `${time} · ${sample.source} · Seen alive: ${sample.seenAlive ? "yes" : "no"} · ` +
-      `Dead: ${sample.dead ? "yes" : "no"} · HP: ${sample.currentHp ?? "?"} / ${sample.maxHp ?? "?"} · ` +
-      `Rarity (entity / component): ${sample.entityRarity} / ${sample.componentRarity}`));
-    list.append(entry);
-  }
-  body.append(list);
-  if (diagnostics.omittedUniqueSamples)
-    body.append(element("p", `Additional samples omitted · ${number.format(diagnostics.omittedUniqueSamples)}`));
 }
 
 const normalBaseCategory = /^(Amulet|Belt|Body Armour|Boots|Bow|Claw|Dagger|Gloves|Helmet|(?:Abyss ?)?Jewel|Quiver|Ring|Rune Dagger|Sceptre|Shield|Staff|Wand|Warstaff|Thrusting One Hand Sword|(?:One|Two) Hand (?:Axe|Mace|Sword))$/i;
@@ -1712,7 +1716,8 @@ $("session-view").addEventListener("change", event => {
 });
 
 async function changeSessionSetting(action, errorMessage) {
-  for (const id of ["new-session", "resume-session", "session-view", "unique-prices"]) $(id).disabled = true;
+  const controls = ["new-session", "open-rename-session", "resume-session", "session-view", "unique-prices"].map($);
+  for (const control of controls) control.disabled = true;
   set("session-control-status", "");
   try {
     await action();
@@ -1721,7 +1726,7 @@ async function changeSessionSetting(action, errorMessage) {
     if (state.sessions) renderSessionControls();
     set("session-control-status", errorMessage);
   } finally {
-    for (const id of ["new-session", "resume-session", "session-view", "unique-prices"]) $(id).disabled = false;
+    for (const control of controls) control.disabled = false;
   }
 }
 $("new-session").addEventListener("click", () => changeSessionSetting(async () => {
@@ -1734,6 +1739,39 @@ $("resume-session").addEventListener("click", () => changeSessionSetting(async (
   state.sessionView = "active";
   state.visible = 25;
 }, "Could not resume this session."));
+$("open-rename-session").addEventListener("click", () => {
+  const session = selectedHistorySession();
+  if (!session) return;
+  const dialog = $("rename-session-dialog");
+  const input = $("session-name");
+  dialog.dataset.sessionId = session.id;
+  input.value = session.name ?? "";
+  input.placeholder = dateLabel(session.startedUtc);
+  set("rename-session-status", "");
+  dialog.showModal();
+  input.select();
+});
+$("rename-session-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const dialog = $("rename-session-dialog");
+  const sessionId = dialog.dataset.sessionId;
+  const name = $("session-name").value.trim();
+  if (!name) {
+    set("rename-session-status", "Enter a session name.");
+    return;
+  }
+  event.submitter.disabled = true;
+  set("rename-session-status", "");
+  try {
+    await request("/api/sessions/rename", { sessionId, name });
+    if (dialog.open && dialog.dataset.sessionId === sessionId) dialog.close();
+    await refresh();
+  } catch {
+    if (dialog.dataset.sessionId === sessionId) set("rename-session-status", "Could not rename this session.");
+  } finally {
+    event.submitter.disabled = false;
+  }
+});
 $("unique-prices").addEventListener("change", event => {
   const include = event.target.checked;
   changeSessionSetting(() => request("/api/settings/unique-prices", include), "Could not save the pricing setting.");

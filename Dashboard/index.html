@@ -26,6 +26,7 @@
     <div class="session-controls">
       <label>Session <select id="session-view"><option value="active">Current session</option></select></label>
       <button class="button" type="button" id="new-session">New session</button>
+      <button class="button" type="button" id="open-rename-session" aria-label="Rename session" hidden>Rename</button>
       <button class="button" type="button" id="resume-session" hidden>Resume</button>
       <label class="check session-pricing"><input id="unique-prices" type="checkbox"> Include base prices for uniques</label>
       <button class="button" type="button" id="open-ignore-list">Global ignore list</button>
@@ -151,10 +152,6 @@
         <p id="detail-empty" class="empty">Select a map to view its details.</p>
         <div id="selected" hidden>
           <div id="map-stats" class="area-stats"></div>
-          <details id="kill-diagnostics" class="kill-diagnostics" hidden>
-            <summary>Kill diagnostics</summary>
-            <div id="kill-diagnostics-body"></div>
-          </details>
           <dl id="run-totals" class="run-totals" aria-label="Map loot totals"></dl>
           <div class="detail-controls">
             <div id="tabs" class="switch" role="group" aria-label="Map details">
@@ -270,6 +267,14 @@
             <p class="muted compare-axis-label">Map number</p>
           </section>
         </div>
+        <section class="panel compare-unique-tiers" aria-labelledby="compare-unique-tiers-title">
+          <div class="section-heading">
+            <h2 id="compare-unique-tiers-title">Unique drops by tier</h2>
+            <button type="button" class="button" id="download-unique-tiers" hidden>Download CSV</button>
+          </div>
+          <p id="compare-tier-status" class="muted" role="status"></p>
+          <div id="compare-tier-content"></div>
+        </section>
         <section class="panel compare-uniques" aria-labelledby="compare-uniques-title">
           <div class="section-heading">
             <h2 id="compare-uniques-title">Unique drops</h2>
@@ -288,6 +293,17 @@
       </div>
     </section>
   </main>
+  <dialog id="rename-session-dialog" aria-labelledby="rename-session-title">
+    <form id="rename-session-form">
+      <h2 id="rename-session-title">Rename session</h2>
+      <label>Session name<input id="session-name" type="text" maxlength="80" required autofocus></label>
+      <p id="rename-session-status" class="form-status" role="status"></p>
+      <div class="dialog-actions">
+        <button class="button" type="button" data-close-dialog="rename-session-dialog">Cancel</button>
+        <button class="button primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="delete-map-dialog" aria-labelledby="delete-map-title">
     <form id="delete-map-form">
       <h2 id="delete-map-title">Delete map?</h2>

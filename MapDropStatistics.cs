@@ -157,7 +157,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
             ObserveEncounterEntity(entity);
             if (entity.Type == EntityType.Monster)
+            {
+                ObserveMonsterKill(entity);
                 return;
+            }
             if (!entity.TryGetComponent<WorldItem>(out var worldItem))
                 return;
 

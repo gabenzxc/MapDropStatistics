@@ -10,6 +10,7 @@ namespace MapDropStatistics;
 public partial class MapDropStatistics
 {
     private const int WidgetT0HighlightMs = 8000;
+    private const float EncounterBarWidth = 56;
     private long _lastWidgetUpdate;
     private LiveWidget _measuredWidget;
     private string _measuredT0DropName;
@@ -119,7 +120,15 @@ public partial class MapDropStatistics
             var currentOffset = row.Inline ? layout.InlineOffset : layout.CurrentOffset;
             var currentColor = row.Current == "—" ? new Color(125, 136, 123, 255) : WidgetAccent(row.AccentRgb, 255);
             Graphics.DrawText(row.Current, new Vector2(x + currentOffset, y), highlightThisRow ? labelColor : currentColor, FontAlign.Left);
-            if (row.Session != null)
+            if (row.Progress is { } progress)
+            {
+                var bar = new RectangleF(x + layout.SessionOffset, y + (layout.LineHeight - 5) / 2, EncounterBarWidth, 5);
+                Graphics.DrawBox(bar, new Color(49, 59, 51, 255), 2);
+                var fill = EncounterBarWidth * Math.Clamp((float)progress.Completed / progress.Found, 0, 1);
+                if (fill > 0)
+                    Graphics.DrawBox(new RectangleF(bar.X, bar.Y, fill, bar.Height), WidgetAccent(row.AccentRgb, 255), 2);
+            }
+            else if (row.Session != null)
                 Graphics.DrawText(row.Session, new Vector2(x + layout.SessionOffset, y), WidgetAccent(row.AccentRgb, 205), FontAlign.Left);
             y += layout.LineHeight;
         }
@@ -139,6 +148,8 @@ public partial class MapDropStatistics
         var valueWidth = regular.Select(row => Graphics.MeasureText(row.Current).X).DefaultIfEmpty().Max();
         var sessionWidth = rows.Where(row => row.Session != null)
             .Select(row => Graphics.MeasureText(row.Session).X).DefaultIfEmpty().Max();
+        if (rows.Any(row => row.Progress != null))
+            sessionWidth = Math.Max(sessionWidth, EncounterBarWidth);
         var currentOffset = labelWidth + gap;
         var sessionOffset = currentOffset + valueWidth + gap;
         var inlineOffset = inline == null ? 0 : Graphics.MeasureText(inline.Label).X + gap;

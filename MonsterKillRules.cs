@@ -6,6 +6,9 @@ internal enum MonsterKillKind { Regular, Auxiliary, EncounterUnique }
 
 internal static class MonsterKillRules
 {
+    public static bool IsConfirmedDeath(bool seenAlive, bool hasMonster, bool isDead, int? currentHp, int? maxHp) =>
+        seenAlive && hasMonster && isDead && currentHp == 0 && maxHp is > 0;
+
     public static MonsterKillKind Classify(string metadata, bool unique)
     {
         if (string.IsNullOrEmpty(metadata))

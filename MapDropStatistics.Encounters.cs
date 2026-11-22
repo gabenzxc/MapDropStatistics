@@ -16,7 +16,6 @@ public partial class MapDropStatistics
     private const int AltarScanIntervalMs = 100;
     private const int AltarSelectionTimeoutMs = 2500;
     private const int MaxEncounterSignalsPerRun = 128;
-    private const string DeliriumMirror = "Metadata/MiscellaneousObjects/Affliction/AfflictionInitiator";
     private const float AltarInteractionRangeSquared = 45 * 45;
     private static readonly Regex AltarTextTags = new(@"<[^>\r\n]+>|[{}]", RegexOptions.Compiled);
     private readonly Dictionary<uint, MapAltar> _seenAltars = [];
@@ -26,7 +25,6 @@ public partial class MapDropStatistics
     private PendingAltarChoice _pendingAltar;
     private long _nextAltarScan;
     private long _altarOptionsReadAt;
-    private long _nextEncounterPanelRead;
     private bool _altarMouseDown;
 
     private sealed record AltarOption(uint Id, Entity Entity, RectangleF Bounds, System.Numerics.Vector2 Position,
@@ -79,6 +77,7 @@ public partial class MapDropStatistics
         var metadata = entity.Metadata;
         if (metadata == null)
             return;
+        ObserveProgressEncounter(entity, metadata);
         if (ObserveWildwoodEntrance(metadata) || ObserveMirageNpc(metadata) || ObserveDeliriumMirror(metadata))
             return;
         if (IsEncounterSignal(metadata) &&
@@ -108,7 +107,7 @@ public partial class MapDropStatistics
 
     private bool ObserveDeliriumMirror(string metadata)
     {
-        if (metadata != DeliriumMirror)
+        if (metadata != EncounterProgressRules.DeliriumMirror)
             return false;
         MarkEncounterZone("delirium");
         RecordEncounterSignal("Entity", metadata);
@@ -135,20 +134,16 @@ public partial class MapDropStatistics
         var foundMirage = _activeRun.Zones.Contains("mirage");
         var foundDelirium = _activeRun.Zones.Contains("delirium");
         var foundWildwood = _activeRun.Zones.Contains("wildwood");
-        if (foundMirage && foundDelirium && foundWildwood)
-            return;
-
         foreach (var entity in GameController.EntityListWrapper.OnlyValidEntities)
         {
             if (entity.Type is EntityType.WorldItem or EntityType.Monster or EntityType.Player)
                 continue;
 
             var metadata = entity.Metadata;
+            ObserveProgressEncounter(entity, metadata);
             foundMirage = foundMirage || ObserveMirageNpc(metadata);
             foundDelirium = foundDelirium || ObserveDeliriumMirror(metadata);
             foundWildwood = foundWildwood || ObserveWildwoodEntrance(metadata);
-            if (foundMirage && foundDelirium && foundWildwood)
-                break;
         }
     }
 
@@ -210,17 +205,6 @@ public partial class MapDropStatistics
             MarkEncounterZone("wildwood");
             RecordEncounterSignal("Area state", "IsInsideAzmeriZone = true");
         }
-        if (now >= _nextEncounterPanelRead)
-        {
-            _nextEncounterPanelRead = now + 1000;
-            if (!_activeRun.Zones.Contains("delirium") && GameController.IngameState.ServerData?.DeliriumRewards?.Any(
-                    reward => reward.TargetProgress > 0 && !string.IsNullOrEmpty(reward.Type?.Id)) == true)
-            {
-                MarkEncounterZone("delirium");
-                RecordEncounterSignal("Area state", "Delirium reward progress available");
-            }
-        }
-
         var hasOpenAltars = _seenAltars.Values.Any(altar => altar.SelectedEffects == null);
         // Labels cover instances already present when the plugin attaches, including altars seen before a portal return.
         var scanned = ReadAltarOptions(now);

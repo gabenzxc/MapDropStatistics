@@ -24,7 +24,7 @@ internal sealed class MapRun
     public int PartyDeaths { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MapKillCounts Kills { get; set; }
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWriting)]
     public MapKillDiagnostics KillDiagnostics { get; set; }
     public int Quantity { get; set; }
     public int Rarity { get; set; }
@@ -40,6 +40,8 @@ internal sealed class MapRun
     public List<MapModifier> Modifiers { get; set; } = [];
     public HashSet<string> Zones { get; set; } = [];
     public List<EncounterSignal> EncounterSignals { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MapEncounterProgress EncounterProgress { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool MirageNpcObserved { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -82,12 +84,12 @@ internal sealed class MapRun
 
     public MapKillCounts GetDisplayKills()
     {
-        if (Kills == null || KillDiagnostics is not { UsesEncounterFilter: false, OmittedUniqueSamples: 0 } diagnostics ||
+        if (Kills == null || KillDiagnostics is not { UsesEncounterFilter: false, OmittedUniqueSamples: 0, UniqueSamples: { } samples } ||
             Kills.Unique == 0)
             return Kills;
 
         // Older records can only be corrected when the saved samples account for every counted Unique.
-        var countedUnique = diagnostics.UniqueSamples.Where(sample =>
+        var countedUnique = samples.Where(sample =>
             sample.Result == "Counted" && sample.ComponentRarity == "Unique").ToArray();
         if (countedUnique.Select(sample => sample.Id).Distinct().Count() != Kills.Unique || countedUnique.Length != Kills.Unique)
             return Kills;
@@ -98,6 +100,14 @@ internal sealed class MapRun
             Unique = kinds.Count(kind => kind == MonsterKillKind.Regular),
             EncounterUnique = kinds.Count(kind => kind == MonsterKillKind.EncounterUnique)
         };
+    }
+
+    internal void NormalizeLegacyKillCounts()
+    {
+        if (KillDiagnostics == null)
+            return;
+        Kills = GetDisplayKills();
+        KillDiagnostics = null;
     }
 }
 
@@ -118,13 +128,10 @@ internal sealed record MapKillCounts(int Normal = 0, int Magic = 0, int Rare = 0
 internal sealed class MapKillDiagnostics
 {
     public bool UsesEncounterFilter { get; set; }
-    public int IgnoredAuxiliaryDeaths { get; set; }
-    public int RejectedCandidates { get; set; }
     public int OmittedUniqueSamples { get; set; }
     public List<UniqueKillSample> UniqueSamples { get; set; } = [];
 }
-internal sealed record UniqueKillSample(DateTime SeenUtc, uint Id, string Name, string Metadata, string Source,
-    string Result, bool SeenAlive, bool Dead, int? CurrentHp, int? MaxHp, string EntityRarity, string ComponentRarity);
+internal sealed record UniqueKillSample(uint Id, string Metadata, string Result, string ComponentRarity);
 internal sealed record LootEdit(bool Excluded, double? UnitDivine);
 internal sealed record MapLoot(Guid Id, string Name, string Category)
 {
@@ -169,7 +176,9 @@ internal sealed record DropAverageResult(int Maps, Dictionary<string, long> Drop
     public Dictionary<string, string> Icons { get; init; }
 }
 internal enum LootScope { All, Personal, Party }
-internal sealed record FarmingSession(Guid Id, DateTime StartedUtc, string Name, double HideoutSeconds = 0);
+internal sealed record FarmingSession(Guid Id, DateTime StartedUtc, string Name, double HideoutSeconds = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool HasCustomName = false);
+internal sealed record SessionRename(Guid SessionId, string Name);
 internal sealed record MapCostSettings(double MapPriceDivine = 1);
 internal sealed record MapPricing(double DefaultMapDivine, DateTime? SnapshotUtc = null,
     Dictionary<string, double> ThreadUnitDivine = null, bool Estimated = false, int? SnapshotWindowHours = null)
@@ -253,6 +262,8 @@ internal sealed record MapSummary(
     public string LastT0Unique { get; init; }
     public long ValdosDropped { get; init; }
     public MapPricing Pricing { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MapEncounterProgress EncounterProgress { get; init; }
     internal bool WipeObserved { get; init; }
     internal bool? FailureOverride { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -313,8 +324,11 @@ internal sealed record MapSummary(
         var zones = run.Zones.Where(zone => !string.Equals(zone, "mirage", StringComparison.OrdinalIgnoreCase))
             .Concat(run.Modifiers.Where(mod => mod.Value > 0).Select(mod => ZoneFromMapStat(mod.Stat)).OfType<string>())
             .ToHashSet(StringComparer.Ordinal);
-        if (run.MirageNpcObserved || run.EncounterSignals.Any(signal => signal.Source == "Entity" && signal.Detail == MirageNpcMetadata))
+        if (run.EncounterProgress?.MirageActivated == true || run.MirageNpcObserved ||
+            run.EncounterSignals.Any(signal => signal.Source == "Entity" && signal.Detail == MirageNpcMetadata))
             zones.Add("mirage");
+        if (run.EncounterProgress?.DeliriumStarted == true)
+            zones.Add("delirium");
         if (!zones.Contains("wildwood") && run.EncounterSignals.Any(signal =>
                 (signal.Source is "Entity" or "Transition entity") && IsWildwoodEntrance(signal.Detail)))
             zones.Add("wildwood");
@@ -335,6 +349,7 @@ internal sealed record MapSummary(
             LastT0Unique = run.LastT0Unique,
             ExcludedFromStatistics = run.ExcludedFromStatistics,
             Favorite = run.Favorite,
+            EncounterProgress = run.EncounterProgress,
             WipeObserved = run.WipeObserved,
             FailureOverride = run.FailureOverride,
             ValdosDropped = valdos,
@@ -449,10 +464,10 @@ internal sealed partial class MapHistory
     {
         lock (_gate)
             return new SessionList(_sessions.ActiveId, _sessions.IncludeUniquePrices,
-                _sessions.Sessions.Select(session => session.Name switch
+                _sessions.Sessions.Select(session => (session.HasCustomName, session.Name) switch
                 {
-                    "Первая сессия" => session with { Name = "First session" },
-                    "До последнего сброса" => session with { Name = "Before last reset" },
+                    (false, "Первая сессия") => session with { Name = "First session" },
+                    (false, "До последнего сброса") => session with { Name = "Before last reset" },
                     _ => session
                 }).ToArray(), _sessions.IgnoredItems ?? [], _sessions.GetMinimumPrice(), _sessions.MapCosts ?? new MapCostSettings(),
                 _failUniqueThreshold);
@@ -615,6 +630,25 @@ internal sealed partial class MapHistory
                 return false;
             if (_sessions.ActiveId != id)
                 ChangeActiveSession(id);
+            return true;
+        }
+    }
+
+    public bool RenameSession(Guid id, string name)
+    {
+        lock (_gate)
+        {
+            var index = Array.FindIndex(_sessions.Sessions, session => session.Id == id);
+            if (index < 0)
+                return false;
+
+            var session = _sessions.Sessions[index];
+            if (session.HasCustomName && session.Name == name)
+                return true;
+
+            var sessions = (FarmingSession[])_sessions.Sessions.Clone();
+            sessions[index] = session with { Name = name, HasCustomName = true };
+            SaveSessions(_sessions with { Sessions = sessions });
             return true;
         }
     }
@@ -1046,10 +1080,16 @@ internal sealed partial class MapHistory
     private static MapRun Read(string file)
     {
         using var stream = File.OpenRead(file);
-        return JsonSerializer.Deserialize<MapRun>(stream, Json) ?? throw new JsonException("Empty map record");
+        var run = JsonSerializer.Deserialize<MapRun>(stream, Json) ?? throw new JsonException("Empty map record");
+        run.NormalizeLegacyKillCounts();
+        return run;
     }
 
-    private void Write(MapRun run) => WriteAtomic(FilePath(run.Id), run);
+    private void Write(MapRun run)
+    {
+        run.NormalizeLegacyKillCounts();
+        WriteAtomic(FilePath(run.Id), run);
+    }
 
     internal static void WriteAtomic<T>(string file, T data, JsonSerializerOptions options = null)
     {

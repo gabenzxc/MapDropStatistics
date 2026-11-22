@@ -114,6 +114,9 @@ select { appearance: none; padding-right: 34px; background-image: linear-gradien
 .compare-tooltip strong { display: block; }
 .compare-unique-controls { display: flex; flex-wrap: wrap; gap: 6px; }
 .compare-unique-controls input { width: min(100%, 190px); }
+.compare-unique-tiers { margin-bottom: 14px; }
+.compare-unique-tiers .section-heading { flex-wrap: wrap; gap: 9px; }
+#compare-tier-status:not(:empty) { margin-top: 8px; }
 #compare-unique-status { margin-top: 8px; }
 .compare-uniques .compare-scroll { max-height: 550px; }
 .compare-uniques thead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
@@ -251,13 +254,6 @@ select { appearance: none; padding-right: 34px; background-image: linear-gradien
 .encounter-diagnostics summary { cursor: pointer; }
 .encounter-signals { margin: 8px 0 0; padding-left: 19px; max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
 .encounter-signals li { padding: 3px 0; }
-.kill-diagnostics { margin: 0 0 12px; color: var(--muted); font-size: .86rem; }
-.kill-diagnostics summary { cursor: pointer; }
-.kill-diagnostics p { margin-top: 7px; }
-.kill-samples { margin: 7px 0 0; padding-left: 18px; max-height: 250px; overflow: auto; overflow-wrap: anywhere; }
-.kill-samples li { padding: 5px 0; }
-.kill-samples strong { color: var(--text); }
-.kill-samples small { display: block; }
 .run-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1.22fr)) repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0 0 14px; }
 .run-totals.scoped { grid-template-columns: repeat(2, minmax(0, 152px)); }
 .run-total { min-width: 0; background: var(--inset); border: 1px solid var(--border); border-radius: 7px; padding: 7px 8px; }
@@ -337,6 +333,9 @@ td small { display: block; color: var(--muted); font-size: .8rem; }
 .unique-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
 .unique-summary .unique-totals { margin: 0; }
 .unique-summary a { margin-left: auto; text-underline-offset: 3px; }
+.unique-tier-summary { margin: 10px 0; }
+.unique-tier-summary h3 { margin: 0; font-size: .9rem; font-weight: 600; }
+.unique-tier-summary .mod-bonuses { margin-top: 5px; }
 .unique-table-scroll { max-height: 520px; overflow: auto; margin-top: 8px; }
 .unique-table thead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
 .unique-table .unique-price { color: var(--gold); font-weight: 650; white-space: nowrap; }
@@ -382,6 +381,9 @@ dialog form { display: grid; gap: 11px; }
 .widget-row dd { color: var(--widget-accent); }
 .widget-row .widget-empty-value { color: var(--muted); }
 .widget-row .widget-session-value { opacity: .82; }
+.widget-encounter-progress { appearance: none; width: 56px; max-width: 100%; height: 5px; vertical-align: middle; }
+.widget-encounter-progress::-webkit-progress-bar { background: #313b33; border-radius: 3px; }
+.widget-encounter-progress::-webkit-progress-value { background: var(--widget-accent); border-radius: 3px; }
 .widget-inline-row { display: flex; grid-column: 1 / -1; gap: 7px; }
 .widget-preview-pane textarea { width: 100%; color: var(--text); background: var(--inset); border: 1px solid var(--border); border-radius: 7px; padding: 7px; font: inherit; resize: vertical; }
 dialog p#edit-name { color: var(--gold); }

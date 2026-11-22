@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text.Json.Serialization;
 using System.Threading;
 
 namespace MapDropStatistics;
@@ -19,17 +20,28 @@ internal sealed record WidgetSettings(bool Enabled = true, bool ShowOutsideMaps 
         new("uniques", "Uniques"),
         new("t0", "T0 Uniques"),
         new("last-t0", "Last T0"),
+        new("kills", "Monster kills"),
         new("divine", "Divine Orbs"),
         new("valdo", "Valdo's Puzzle Box"),
         new("profit", "Pickup value"),
         new("modifiers", "Item quantity and rarity"),
-        new("custom", "Custom items")
+        new("custom", "Custom items"),
+        new("legion", "Legion progress"),
+        new("abyss", "Abyss progress"),
+        new("mirage", "Mirage activation"),
+        new("delirium", "Delirium activation")
     ];
 
     public bool Shows(string id) => HiddenRows?.Contains(id, StringComparer.Ordinal) != true;
 }
 
-internal sealed record WidgetRow(string Id, string Label, string Current, string Session = null)
+internal sealed record WidgetProgress(int Completed, int Found)
+{
+    public string Text => $"{Completed}/{Found}";
+}
+
+internal sealed record WidgetRow(string Id, string Label, string Current, string Session = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WidgetProgress Progress = null)
 {
     public bool Inline => Id == "last-t0";
     public int AccentRgb => Id switch
@@ -38,7 +50,12 @@ internal sealed record WidgetRow(string Id, string Label, string Current, string
         "currency" or "divine" or "valdo" or "profit" or "custom" => 0xEACB7D,
         "uniques" => 0xE5A174,
         "t0" or "last-t0" => 0xF4B6D5,
+        "kills" => 0xEE9295,
         "modifiers" => 0xA0B7F8,
+        "legion" => 0xD1A7EF,
+        "abyss" => 0x90D9AB,
+        "mirage" => 0xE8C183,
+        "delirium" => 0xB3C7D7,
         _ => 0xB6D3A2
     };
 }
@@ -179,6 +196,7 @@ internal sealed partial class MapHistory
                 new("uniques", "Uniques", Count(current?.UniquesDropped), Average(drops.UniquesDropped, drops.Maps)),
                 new("t0", "T0 Uniques", Count(current?.T0UniquesDropped), Average(drops.T0UniquesDropped, drops.MapsWithT0)),
                 new("last-t0", "Last T0", current?.LastT0Unique ?? totals.LastT0Unique ?? "—"),
+                new("kills", "Kills", Count(current?.MonsterKills), Average(drops.MonsterKills, drops.MapsWithKills)),
                 new("divine", "Divine Orbs", Count(current?.DivineOrbsDropped), Average(drops.Drops["Divine Orb"], drops.Maps)),
                 new("valdo", "Valdo's Box", Count(current?.ValdosDropped), Average(drops.Drops["Valdo's Puzzle Box"], drops.Maps)),
                 new("profit", "Pickup value", current == null ? "—" : $"{Number(current.ProfitDivine)} div",
@@ -193,10 +211,31 @@ internal sealed partial class MapHistory
                 rows.Add(new WidgetRow("custom", name, current == null ? "—" : Count(currentDrops
                     .Where(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)).Sum(item => (long)item.Dropped)),
                     Average(drops.Drops.GetValueOrDefault(name), drops.Maps)));
+            if (inMap && current != null)
+                AddEncounterRows(rows, current);
 
             Volatile.Write(ref _liveWidget, new LiveWidget(settings,
                 new WidgetData(sessionId, area, inGame, inMap, sessionHideout, rows.ToArray(), mapExcluded)));
         }
+    }
+
+    private static void AddEncounterRows(List<WidgetRow> rows, MapSummary map)
+    {
+        var progress = map.EncounterProgress;
+        if (progress?.LegionSeen > 0)
+        {
+            var legion = new WidgetProgress(progress.LegionClosed, progress.LegionSeen);
+            rows.Add(new WidgetRow("legion", "Legion", legion.Text, Progress: legion));
+        }
+        if (progress?.AbyssSeen > 0)
+        {
+            var abyss = new WidgetProgress(progress.AbyssClosed, progress.AbyssSeen);
+            rows.Add(new WidgetRow("abyss", "Abyss", abyss.Text, Progress: abyss));
+        }
+        if (map.Zones.Contains("mirage"))
+            rows.Add(new WidgetRow("mirage", "Mirage", progress?.MirageActivated == true ? "Activated" : "Not activated"));
+        if (map.Zones.Contains("delirium"))
+            rows.Add(new WidgetRow("delirium", "Delirium", progress?.DeliriumStarted == true ? "Started" : "Not started"));
     }
 
     private WidgetSessionStats GetWidgetSessionStats(Guid sessionId, string[] names)
