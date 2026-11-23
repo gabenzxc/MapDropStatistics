@@ -1270,9 +1270,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         if (!string.IsNullOrWhiteSpace(mods.UniqueName))
             return mods.UniqueName;
 
-        if (!mods.Identified && mods.ItemRarity == ItemRarity.Unique)
+        if (mods.ItemRarity == ItemRarity.Unique)
         {
-            var artPath = itemEntity.GetComponent<RenderItem>()?.ResourcePath;
+            var artPath = NormalizeUniqueArtPath(itemEntity.GetComponent<RenderItem>()?.ResourcePath);
             if (!string.IsNullOrWhiteSpace(artPath) && _uniqueArtMapping.TryGetValue(artPath, out var candidates))
             {
                 var filteredCandidates = candidates
@@ -1332,6 +1332,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
     private Dictionary<string, List<string>> LoadUniqueArtMapping()
     {
+        var mapping = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         try
         {
             if ((GameController?.Files?.UniqueItemDescriptions?.EntriesList?.Count ?? 0) == 0 ||
@@ -1347,10 +1348,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                     .Where(x => x.ArtPath != null)
                     .GroupJoin(
                         GameController.Files.UniqueItemDescriptions.EntriesList.Where(x => x.ItemVisualIdentity != null),
-                        x => x,
-                        x => x.ItemVisualIdentity,
-                        (visualIdentity, descriptions) => (visualIdentity.ArtPath, Descriptions: descriptions.ToList()))
-                    .GroupBy(x => x.ArtPath, x => x.Descriptions)
+                        x => x.Id,
+                        x => x.ItemVisualIdentity.Id,
+                        (visualIdentity, descriptions) => (ArtPath: NormalizeUniqueArtPath(visualIdentity.ArtPath), Descriptions: descriptions))
+                    .GroupBy(x => x.ArtPath, x => x.Descriptions, StringComparer.OrdinalIgnoreCase)
                     .Select(x => new
                     {
                         x.Key,
@@ -1360,11 +1361,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
                             .Distinct(StringComparer.InvariantCultureIgnoreCase)
                             .ToList()
                     })
-                    .Where(x => x.Names.Count > 0)
-                    .ToDictionary(x => x.Key, x => x.Names, StringComparer.InvariantCultureIgnoreCase);
+                    .Where(x => x.Names.Count > 0);
 
-                if (gameMapping.Count > 0)
-                    return gameMapping;
+                foreach (var entry in gameMapping)
+                    mapping.Add(entry.Key, entry.Names);
             }
         }
         catch (Exception ex)
@@ -1375,21 +1375,21 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         try
         {
             var fallbackPath = Path.Combine(DirectoryFullName, DefaultUniqueArtMappingFileName);
-            if (!File.Exists(fallbackPath))
-                return new Dictionary<string, List<string>>(StringComparer.InvariantCultureIgnoreCase);
-
-            var json = File.ReadAllText(fallbackPath);
-            var mapping = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(json);
-            return mapping != null
-                ? new Dictionary<string, List<string>>(mapping, StringComparer.InvariantCultureIgnoreCase)
-                : new Dictionary<string, List<string>>(StringComparer.InvariantCultureIgnoreCase);
+            if (File.Exists(fallbackPath) &&
+                JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllText(fallbackPath)) is { } bundled)
+            {
+                foreach (var (path, names) in bundled)
+                    mapping.TryAdd(NormalizeUniqueArtPath(path), names);
+            }
         }
         catch (Exception ex)
         {
             LogError($"LoadUniqueArtMapping(fallback file) failed: {ex}");
-            return new Dictionary<string, List<string>>(StringComparer.InvariantCultureIgnoreCase);
         }
+        return mapping;
     }
+
+    private static string NormalizeUniqueArtPath(string path) => path?.Trim().Replace('\\', '/');
 
     private void ClearSavedMapStats()
     {
