@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using ExileCore;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
@@ -8,7 +9,7 @@ namespace MapDropStatistics;
 
 public partial class MapDropStatistics
 {
-    private readonly Dictionary<uint, ObservedEncounter> _progressEncounters = [];
+    private readonly Dictionary<(bool InMirage, uint Id), ObservedEncounter> _progressEncounters = [];
     private long _nextEncounterProgressRead;
     private long _nextDeliriumRewardRead;
     private bool _deliriumRewardStarted;
@@ -34,10 +35,11 @@ public partial class MapDropStatistics
         if (kind == ProgressEncounter.None || entity.Id == 0)
             return;
 
-        if (_progressEncounters.TryGetValue(entity.Id, out var observed) && observed.Kind == kind)
+        var key = (_inMirage, entity.Id);
+        if (_progressEncounters.TryGetValue(key, out var observed) && observed.Kind == kind)
             observed.Entity = entity;
         else
-            _progressEncounters[entity.Id] = observed = new ObservedEncounter(kind, entity);
+            _progressEncounters[key] = observed = new ObservedEncounter(kind, entity);
         ReadEncounterState(observed);
     }
 
@@ -78,12 +80,21 @@ public partial class MapDropStatistics
         var legionClosed = 0;
         var abyssSeen = 0;
         var abyssClosed = 0;
-        var mirageActivated = _lastRunModifiers.GetValueOrDefault(GameStat.MapMirageChosenWishIndex1ForLogging)?.Value > 0;
+        var mirageActivated = _inMirage || _activeRun.EncounterProgress?.MirageActivated == true ||
+            _lastRunModifiers.GetValueOrDefault(GameStat.MapMirageChosenWishIndex1ForLogging)?.Value > 0;
         var deliriumStarted = _deliriumRewardStarted ||
             _lastRunModifiers.GetValueOrDefault(GameStat.MapHasAfflictionEverywhere)?.Value > 0;
-        foreach (var encounter in _progressEncounters.Values)
+        foreach (var ((inMirage, id), encounter) in _progressEncounters)
         {
-            ReadEncounterState(encounter);
+            if (inMirage == _inMirage && !encounter.Complete)
+            {
+                var entity = EntityListWrapper.GetEntityById(id);
+                if (entity?.IsValid == true && EncounterProgressRules.Identify(entity.Metadata) == encounter.Kind)
+                {
+                    encounter.Entity = entity;
+                    ReadEncounterState(encounter);
+                }
+            }
             switch (encounter.Kind)
             {
                 case ProgressEncounter.Legion or ProgressEncounter.EndlessLegion:

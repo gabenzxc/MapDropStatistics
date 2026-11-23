@@ -23,8 +23,11 @@ public partial class MapDropStatistics
     private MapHistory _history;
     private DashboardServer _dashboard;
     private MapRun _activeRun;
-    private uint _mapHash;
-    private int _mapInstanceId;
+    private MapInstanceIdentity _currentMapInstance;
+    private MapInstanceIdentity _baseMapInstance;
+    private TimeSpan _lastBaseMapTime;
+    private MapModifierReadResult _baseMapModifiers;
+    private bool _inMirage;
     private long _nextPickupPoll;
     private long _nextRunSave;
     private long _nextPriceRead;
@@ -122,7 +125,10 @@ public partial class MapDropStatistics
             try
             {
                 var legacy = JsonSerializer.Deserialize<AreaDump>(File.ReadAllText(path));
-                if (legacy == null || MapAreaRules.IsExcludedFromMaps(legacy.AreaName))
+                if (legacy == null)
+                    continue;
+                var areaId = MapAreaRules.AreaIdFromKey(legacy.AreaKey);
+                if (!MapAreaRules.IsAtlasMap(areaId, legacy.AreaName))
                     continue;
                 if (legacy.HistoryMapId is { } linkedId && _history.IsDeleted(linkedId))
                     continue;
@@ -149,7 +155,7 @@ public partial class MapDropStatistics
                 }
                 var run = new MapRun
                 {
-                    Id = id, Name = legacy.AreaName, State = "legacy",
+                    Id = id, Name = legacy.AreaName, AreaId = areaId, State = "legacy",
                     StartedUtc = legacy.SavedAtUtc, UpdatedUtc = legacy.SavedAtUtc,
                     Quantity = legacy.FinalItemQuantity, Rarity = legacy.FinalItemRarity, PackSize = legacy.FinalPackSize,
                     MoreCurrency = legacy.FinalMoreCurrency, MoreMaps = legacy.FinalMoreMaps, MoreScarabs = legacy.FinalMoreScarabs,
@@ -257,23 +263,54 @@ public partial class MapDropStatistics
 
     private bool IsSameMapInstance(AreaInstance area, bool allowUnknown = false)
     {
-        if (area == null || !string.Equals(_currentAreaKey, GetAreaKey(area), StringComparison.Ordinal))
+        var candidate = ReadMapInstance(area);
+        return allowUnknown ? _currentMapInstance.CompatibleWith(candidate) : _currentMapInstance.Matches(candidate);
+    }
+
+    private MapInstanceIdentity ReadMapInstance(AreaInstance area)
+    {
+        var areaId = area?.Area?.Id;
+        var hash = area?.Hash ?? 0;
+        if (hash == 0 && areaId != null && GameController?.IngameState?.Data is { } data && data.CurrentArea?.Id == areaId)
+            hash = data.CurrentAreaHash;
+        return new(areaId, hash, area?.InstanceId ?? 0);
+    }
+
+    private bool IsMirageArea(AreaInstance area) => MapInstanceIdentity.IsMirage(area?.DisplayName,
+        GameController?.Game?.LoadingState?.AreaName);
+
+    private bool CanResumeMap(AreaInstance area, bool isMirage)
+    {
+        var candidate = ReadMapInstance(area);
+        if (_currentMapInstance.Matches(candidate) || _baseMapInstance.Matches(candidate))
+            return true;
+        if (!_currentMapInstance.SameArea(candidate))
             return false;
-        var hash = area.Hash;
-        if (_mapHash != 0 && hash != 0)
-            return _mapHash == hash;
-        var instance = area.InstanceId;
-        return _mapInstanceId != 0 && instance != 0 ? _mapInstanceId == instance : allowUnknown;
+
+        // The Mirage uses its parent map's WorldArea and may have its own instance identifiers.
+        if (_trackingCurrentArea && isMirage != _inMirage)
+            return true;
+
+        var data = GameController.IngameState.Data;
+        if (isMirage || !MapInstanceIdentity.HasPriorMapTime(_lastBaseMapTime, data.TimeInMapBeforeZoneIn))
+            return false;
+
+        var actual = ReadCurrentMapModifierSnapshot();
+        return _baseMapModifiers.MatchedStatsCount > 0 && actual.MatchedStatsCount > 0 &&
+               _baseMapModifiers.Snapshot == actual.Snapshot;
     }
 
     private void StartRun(AreaInstance area)
     {
-        _mapHash = area?.Hash ?? 0;
-        _mapInstanceId = area?.InstanceId ?? 0;
+        _baseMapInstance = default;
+        _lastBaseMapTime = default;
+        _baseMapModifiers = default;
+        SetMapSegment(area, _trackingCurrentArea && IsMirageArea(area));
         _activeRun = _trackingCurrentArea && _history != null
             ? new MapRun
             {
-                Name = _currentAreaName, StartedUtc = DateTime.UtcNow, Altars = [], SessionId = _history.ActiveSessionId,
+                Name = _currentAreaName, AreaId = area?.Area?.Id,
+                StartedUtc = DateTime.UtcNow, Altars = [], SessionId = _history.ActiveSessionId,
                 TracksUniqueBelts = true,
                 Pricing = new MapPricing(_history.DefaultMapPriceDivine, SnapshotWindowHours: MarketPriceArchive.WindowHours)
             }
@@ -302,9 +339,8 @@ public partial class MapDropStatistics
         ResetPickupObservations();
     }
 
-    private void ResumeRun(AreaInstance area)
+    private void ResumeRun()
     {
-        UpdateMapIdentity(area);
         if (_activeRun == null)
             return;
         _activeRun.State = "active";
@@ -326,7 +362,7 @@ public partial class MapDropStatistics
 
     private void UpdateRunTracking()
     {
-        UpdateMapIdentity(GameController.Area.CurrentArea);
+        UpdateMapIdentity();
         if (_activeRun == null)
             return;
 
@@ -355,12 +391,30 @@ public partial class MapDropStatistics
         }
     }
 
-    private void UpdateMapIdentity(AreaInstance area)
+    private void SetMapSegment(AreaInstance area, bool isMirage)
     {
-        if (_mapHash == 0)
-            _mapHash = area?.Hash ?? 0;
-        if (_mapInstanceId == 0)
-            _mapInstanceId = area?.InstanceId ?? 0;
+        _currentMapInstance = ReadMapInstance(area);
+        _inMirage = isMirage;
+        if (!isMirage)
+            _baseMapInstance = _currentMapInstance;
+    }
+
+    private void UpdateMapIdentity()
+    {
+        var area = GameController.Area.CurrentArea;
+        var current = ReadMapInstance(area);
+        _currentMapInstance = _currentMapInstance with
+        {
+            Hash = _currentMapInstance.Hash == 0 ? current.Hash : _currentMapInstance.Hash,
+            InstanceId = _currentMapInstance.InstanceId == 0 ? current.InstanceId : _currentMapInstance.InstanceId
+        };
+        if (!_inMirage)
+        {
+            _baseMapInstance = _currentMapInstance;
+            var mapTime = GameController.IngameState.Data.TimeInMap;
+            if (mapTime > _lastBaseMapTime)
+                _lastBaseMapTime = mapTime;
+        }
     }
 
     private void CaptureRunModifiers()
@@ -537,17 +591,21 @@ public partial class MapDropStatistics
                 return;
 
             var possibleKill = _livingMonsters.Contains(entity.Id);
-            var hasEncounter = _progressEncounters.TryGetValue(entity.Id, out var encounter);
+            var hasEncounter = _progressEncounters.TryGetValue((_inMirage, entity.Id), out var encounter) &&
+                entity.Address == encounter.Entity.Address;
             var possiblePickup = _groundDrops.TryGetValue(entity.Id, out var drop) &&
                 !_resolvedGroundDrops.Contains(entity.Id) && (entity.Address == 0 || drop.Address == entity.Address);
             if ((!possibleKill && !possiblePickup && !hasEncounter) ||
-                GameController.IsLoading ||
+                _areaChangePending || GameController.IsLoading ||
                 GameController.Game.AreaChangeCount != _lastAreaChangeCount ||
                 !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true))
                 return;
 
-            if (hasEncounter)
+            if (hasEncounter && entity.IsValid)
+            {
+                encounter.Entity = entity;
                 ReadEncounterState(encounter);
+            }
             if (possibleKill && entity.IsValid && entity.Type == EntityType.Monster)
                 ObserveMonsterKill(entity);
             if (!possiblePickup)

@@ -14,6 +14,8 @@ internal sealed class MapRun
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? SessionId { get; set; }
     public string Name { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string AreaId { get; set; }
     public string League { get; set; }
     public DateTime StartedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
@@ -422,7 +424,7 @@ internal sealed partial class MapHistory
                     DeleteRecordFile(file);
                     continue;
                 }
-                if (MapAreaRules.IsExcludedFromMaps(run.Name))
+                if (!MapAreaRules.IsAtlasMap(run))
                     continue;
                 if (run.State is "active" or "paused")
                 {
@@ -729,7 +731,7 @@ internal sealed partial class MapHistory
 
     public void Save(MapRun run)
     {
-        if (MapAreaRules.IsExcludedFromMaps(run.Name))
+        if (!MapAreaRules.IsAtlasMap(run))
             return;
 
         lock (_gate)

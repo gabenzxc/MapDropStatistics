@@ -33,15 +33,17 @@ public partial class MapDropStatistics
 
     private void MarkEncounterArea(AreaInstance area, bool startsRun = false)
     {
-        if (_activeRun == null || !IsTrackableArea(area))
+        if (_activeRun == null || area == null)
             return;
         var name = area.Name ?? string.Empty;
         var areaId = area.Area?.Id;
+        var isWildwood = areaId == "AzmeriLeagueArea";
+        if (!isWildwood && !IsTrackableArea(area))
+            return;
         if (startsRun || !IsSameMapInstance(area, allowUnknown: true) || IsEncounterSignal(name) || IsEncounterSignal(areaId) ||
             name.Contains("Мираж", StringComparison.OrdinalIgnoreCase))
             RecordEncounterSignal(startsRun ? "Area" : "Area transition", areaId ?? name, area);
-        if (name.Contains("Wildwood", StringComparison.OrdinalIgnoreCase) ||
-            name.Contains("Дикий лес", StringComparison.OrdinalIgnoreCase))
+        if (isWildwood)
             MarkEncounterZone("wildwood");
     }
 

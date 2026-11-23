@@ -83,6 +83,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private bool _hasPausedTrackableArea;
     private bool _hasLastKnownMapModifierSnapshot;
     private int _lastAreaChangeCount = -1;
+    private volatile bool _areaChangePending;
+    private long _mapReentryCheckUntil;
     private long _nextPendingRetryTick;
     private DateTime _currentAreaStartedUtc;
     private bool _isInNonMapArea;
@@ -134,10 +136,10 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         try
         {
+            _areaChangePending = true;
             _history?.ObserveHideout(area?.IsHideout == true);
             if (_uniqueArtMapping.Count == 0)
                 _uniqueArtMapping = LoadUniqueArtMapping();
-            HandleAreaTransition(area);
         }
         catch (Exception ex)
         {
@@ -152,7 +154,9 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             if (!_trackingCurrentArea || entity?.IsValid != true || GameController?.Files?.BaseItemTypes == null)
                 return;
 
-            if (GameController.IsLoading || !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true))
+            if (_areaChangePending || GameController.IsLoading ||
+                GameController.Game.AreaChangeCount != _lastAreaChangeCount ||
+                !IsSameMapInstance(GameController.Area.CurrentArea, allowUnknown: true))
                 return;
 
             ObserveEncounterEntity(entity);
@@ -249,7 +253,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
 
             _wasInGameLastTick = true;
 
-            EnsureAreaState();
+            if (!EnsureAreaState())
+                return null;
             CaptureMarketSnapshot();
 
             if (!_trackingCurrentArea)
@@ -295,88 +300,61 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         return null;
     }
 
-    private void EnsureAreaState()
+    private bool EnsureAreaState()
     {
         var liveArea = GameController?.Area?.CurrentArea;
-        var liveAreaKey = GetAreaKey(liveArea);
+        if (liveArea == null ||
+            (liveArea.Area?.Id == null && liveArea is { IsTown: false, IsHideout: false, IsPeaceful: false }))
+            return false;
+
         var liveAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
+        var isMap = IsTrackableArea(liveArea);
+        if (!_areaChangePending && liveAreaChangeCount == _lastAreaChangeCount &&
+            (isMap ? _trackingCurrentArea && IsSameMapInstance(liveArea, allowUnknown: true)
+                   : !_trackingCurrentArea && _isInNonMapArea))
+            return true;
 
-        if (!_trackingCurrentArea && _hasPausedTrackableArea && !IsTrackableArea(liveArea))
+        // The controller can announce a transition before its in-game data has switched over.
+        if (isMap && GameController.IngameState?.Data?.CurrentArea?.Id != liveArea.Area.Id)
+            return false;
+
+        var isMirage = isMap && IsMirageArea(liveArea);
+        var hasRun = _trackingCurrentArea || _hasPausedTrackableArea;
+        var resume = isMap && hasRun && CanResumeMap(liveArea, isMirage);
+        if (isMap && hasRun && !resume && _currentMapInstance.SameArea(ReadMapInstance(liveArea)))
         {
-            if (!_isInNonMapArea)
-                StartNonMapAreaSegment();
-
-            _lastAreaChangeCount = liveAreaChangeCount;
-            return;
+            // Give the map clock and modifier data a chance to populate after the loading screen.
+            var now = Environment.TickCount64;
+            if (_mapReentryCheckUntil == 0)
+                _mapReentryCheckUntil = now + 750;
+            if (now < _mapReentryCheckUntil)
+                return false;
         }
 
-        if (liveAreaChangeCount != _lastAreaChangeCount)
-        {
-            HandleAreaTransition(liveArea);
-            return;
-        }
-
-        if (string.IsNullOrEmpty(liveAreaKey) ||
-            (string.Equals(liveAreaKey, _currentAreaKey, StringComparison.Ordinal) &&
-             IsSameMapInstance(liveArea, allowUnknown: true)))
-            return;
-
-        HandleAreaTransition(liveArea);
-    }
-
-    private void HandleAreaTransition(AreaInstance area)
-    {
+        _mapReentryCheckUntil = 0;
         FinalizeNonMapSegment();
-
-        var nextAreaKey = GetAreaKey(area);
-        var nextIsTrackable = IsTrackableArea(area);
-        if (_trackingCurrentArea && nextIsTrackable)
-            MarkEncounterArea(area);
-
-        if (_trackingCurrentArea &&
-            !string.IsNullOrEmpty(_currentAreaKey) &&
-            string.Equals(_currentAreaKey, nextAreaKey, StringComparison.Ordinal) &&
-            IsSameMapInstance(area, allowUnknown: true))
+        if (isMap)
         {
-            _currentAreaName = area?.Name ?? _currentAreaName;
-            _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
-            return;
-        }
-
-        if (!_trackingCurrentArea)
-        {
-            if (!nextIsTrackable)
+            if (resume)
+                ResumePausedArea(liveArea, isMirage);
+            else
             {
-                StartNonMapAreaSegment();
-                _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
-                return;
-            }
-
-            if (_hasPausedTrackableArea)
-            {
-                if (IsSameMapInstance(area))
-                {
-                    ResumePausedArea(area);
-                    return;
-                }
-
                 FinalizeCurrentArea();
+                StartTrackingArea(liveArea);
             }
-
-            StartTrackingArea(area);
-            return;
         }
-
-        if (nextIsTrackable)
+        else
         {
-            FinalizeCurrentArea();
-            StartTrackingArea(area);
-            return;
+            if (_trackingCurrentArea)
+            {
+                MarkEncounterArea(liveArea);
+                PauseCurrentArea();
+            }
+            StartNonMapAreaSegment();
         }
-
-        PauseCurrentArea();
-        StartNonMapAreaSegment();
-        _lastAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
+        _lastAreaChangeCount = liveAreaChangeCount;
+        _areaChangePending = false;
+        return true;
     }
 
     private void TryProcessDrop(long dropKey, string persistentItemKey, Entity worldEntity, Entity itemEntity)
@@ -795,10 +773,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         SaveSessionSnapshot();
     }
 
-    private void ResumePausedArea(AreaInstance area)
+    private void ResumePausedArea(AreaInstance area, bool isMirage)
     {
         _currentAreaName = area?.Name ?? _currentAreaName;
         _currentAreaKey = GetAreaKey(area);
+        SetMapSegment(area, isMirage);
         _trackingCurrentArea = true;
         _seedGroundItems = true;
         _hasPausedTrackableArea = false;
@@ -807,7 +786,12 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _isInNonMapArea = false;
         _nonMapAreaStartedUtc = default;
         _nextPendingRetryTick = 0;
-        ResumeRun(area);
+        ResumeRun();
+        if (isMirage && _activeRun != null)
+        {
+            MarkEncounterZone("mirage");
+            RecordEncounterSignal("Area transition", "Entered Mirage", area);
+        }
         UpdateCurrentAreaMapModifierStats();
         ResetDebugCounters();
     }
@@ -823,14 +807,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.CurrentNonMapElapsed = DateTime.UtcNow - _nonMapAreaStartedUtc;
     }
 
-    private static bool IsTrackableArea(AreaInstance area)
-    {
-        if (area is not { IsTown: false, IsHideout: false, IsPeaceful: false })
-            return false;
-
-        var name = area.Name ?? string.Empty;
-        return !MapAreaRules.IsExcludedFromMaps(name, area.Area?.Id) && !name.Contains("Vault", StringComparison.InvariantCultureIgnoreCase);
-    }
+    private static bool IsTrackableArea(AreaInstance area) =>
+        area is { IsTown: false, IsHideout: false, IsPeaceful: false } && MapAreaRules.IsAtlasMap(area.Area?.Id);
 
     private static string GetAreaKey(AreaInstance area)
     {
@@ -1063,6 +1041,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         {
             _lastKnownMapModifierSnapshot = readResult.Snapshot;
             _hasLastKnownMapModifierSnapshot = true;
+            if (!_inMirage)
+                _baseMapModifiers = readResult;
         }
 
         var snapshot = readResult.MatchedStatsCount > 0
