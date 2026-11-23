@@ -37,14 +37,14 @@ public partial class MapDropStatistics
             return;
         var name = area.Name ?? string.Empty;
         var areaId = area.Area?.Id;
-        var isWildwood = areaId == "AzmeriLeagueArea";
+        var isWildwood = areaId == EncounterProgressRules.WildwoodAreaId;
         if (!isWildwood && !IsTrackableArea(area))
             return;
         if (startsRun || !IsSameMapInstance(area, allowUnknown: true) || IsEncounterSignal(name) || IsEncounterSignal(areaId) ||
             name.Contains("Мираж", StringComparison.OrdinalIgnoreCase))
             RecordEncounterSignal(startsRun ? "Area" : "Area transition", areaId ?? name, area);
         if (isWildwood)
-            MarkEncounterZone("wildwood");
+            MarkWildwoodEntered();
     }
 
     private static bool IsEncounterSignal(string text) => !string.IsNullOrEmpty(text) &&
@@ -69,6 +69,19 @@ public partial class MapDropStatistics
     {
         if (_activeRun.Zones.Add(zone))
             _nextRunSave = 0;
+    }
+
+    private void MarkWildwoodEntered()
+    {
+        MarkEncounterZone("wildwood");
+        if (_activeRun.EncounterProgress?.WildwoodEntered == true)
+            return;
+
+        _activeRun.EncounterProgress = (_activeRun.EncounterProgress ?? new MapEncounterProgress()) with
+        {
+            WildwoodEntered = true
+        };
+        _nextRunSave = 0;
     }
 
     private void ObserveEncounterEntity(Entity entity)
@@ -204,8 +217,8 @@ public partial class MapDropStatistics
         var data = GameController.IngameState.Data;
         if (data?.IsInsideAzmeriZone == true)
         {
-            MarkEncounterZone("wildwood");
-            RecordEncounterSignal("Area state", "IsInsideAzmeriZone = true");
+            MarkWildwoodEntered();
+            RecordEncounterSignal("Area state", EncounterProgressRules.WildwoodInsideSignal);
         }
         var hasOpenAltars = _seenAltars.Values.Any(altar => altar.SelectedEffects == null);
         // Labels cover instances already present when the plugin attaches, including altars seen before a portal return.

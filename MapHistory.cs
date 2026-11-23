@@ -331,8 +331,13 @@ internal sealed record MapSummary(
             zones.Add("mirage");
         if (run.EncounterProgress?.DeliriumStarted == true)
             zones.Add("delirium");
-        if (!zones.Contains("wildwood") && run.EncounterSignals.Any(signal =>
-                (signal.Source is "Entity" or "Transition entity") && IsWildwoodEntrance(signal.Detail)))
+        var encounterProgress = run.EncounterProgress;
+        if (encounterProgress?.WildwoodEntered != true && run.EncounterSignals.Any(signal => signal is
+                { Source: "Area state", Detail: EncounterProgressRules.WildwoodInsideSignal } or
+                { Source: "Area transition", Detail: EncounterProgressRules.WildwoodAreaId }))
+            encounterProgress = (encounterProgress ?? new MapEncounterProgress()) with { WildwoodEntered = true };
+        if (encounterProgress?.WildwoodEntered == true || (!zones.Contains("wildwood") && run.EncounterSignals.Any(signal =>
+                (signal.Source is "Entity" or "Transition entity") && IsWildwoodEntrance(signal.Detail))))
             zones.Add("wildwood");
 
         var uniqueTotal = run.DropTotals?.Uniques ?? uniquesDropped;
@@ -351,7 +356,7 @@ internal sealed record MapSummary(
             LastT0Unique = run.LastT0Unique,
             ExcludedFromStatistics = run.ExcludedFromStatistics,
             Favorite = run.Favorite,
-            EncounterProgress = run.EncounterProgress,
+            EncounterProgress = encounterProgress,
             WipeObserved = run.WipeObserved,
             FailureOverride = run.FailureOverride,
             ValdosDropped = valdos,
@@ -688,6 +693,12 @@ internal sealed partial class MapHistory
 
             UpdateValuations(_sessions with { IgnoredItems = names.Order(StringComparer.OrdinalIgnoreCase).ToArray() }, names);
         }
+    }
+
+    public bool IsIgnoredItem(string name)
+    {
+        lock (_gate)
+            return _ignoredItems.Contains(name);
     }
 
     public void SetMinimumPrice(MinimumItemPrice minimumPrice)

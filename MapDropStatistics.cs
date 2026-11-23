@@ -466,7 +466,6 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             {
                 _currentAreaStats.T0UniqueItems++;
                 _currentAreaStats.LastT0UniqueName = uniqueName;
-                NotifyWidgetT0Drop(uniqueName);
             }
         }
         else

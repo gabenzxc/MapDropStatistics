@@ -53,7 +53,7 @@ public partial class MapDropStatistics
     private long _nextMarketCapture;
 
     private sealed record LootKey(string Path, string Name, string Category, int? MapTier = null, string UniqueType = null);
-    private sealed record GroundDrop(LootKey Key, int Quantity, Vector2 Position, long Address);
+    private sealed record GroundDrop(LootKey Key, int Quantity, Vector2 Position, long Address, bool InMirage);
     private sealed record PickupCandidate(uint Id, GroundDrop Drop, long Seen, string NearbyPartyMember);
     private sealed record PartyObservation(string Name, Vector2 Position, bool Dead);
     private sealed record InventoryGain(int Count, long Seen);
@@ -73,6 +73,8 @@ public partial class MapDropStatistics
             Settings.Tracking.FailUniqueThreshold.OnValueChanged += (_, value) => _history.SetFailUniqueThreshold(value);
             _priceArchive = new MarketPriceArchive(Path.Combine(root, "MarketPrices"), GetPricerCacheRoot,
                 message => LogError(message));
+            _itemIcons = new NinjaItemIcons(GetPricerCacheRoot());
+            _widgetDropIcons = new WidgetDropIconCache(Path.Combine(root, "WidgetIcons"), _itemIcons);
             UpdatePricingStatus();
             ImportLegacyMapStats();
             FillSavedMarketPrices();
@@ -213,9 +215,8 @@ public partial class MapDropStatistics
         if (_dashboard?.Port == port || (_dashboard == null && port == 0))
             return;
         _dashboard?.Dispose();
-        var pricerCacheRoot = GetPricerCacheRoot();
         _dashboard = port == 0 ? null : new DashboardServer(port, _history, message => LogError(message),
-            new NinjaItemIcons(pricerCacheRoot), () => _pricingStatus);
+            _itemIcons, () => _pricingStatus);
     }
 
     private void OpenDashboard()
@@ -259,6 +260,7 @@ public partial class MapDropStatistics
             SaveSessionSnapshot();
         _dashboard?.Dispose();
         _dashboard = null;
+        ClearWidgetDropTexture();
     }
 
     private bool IsSameMapInstance(AreaInstance area, bool allowUnknown = false)
@@ -322,6 +324,7 @@ public partial class MapDropStatistics
         _runLoot.Clear();
         _groundDrops.Clear();
         _resolvedGroundDrops.Clear();
+        ResetWidgetDrops();
         _deadPartyMembers.Clear();
         _lastRunModifiers.Clear();
         _localWasDead = false;
@@ -384,6 +387,7 @@ public partial class MapDropStatistics
         }
 
         RefreshMarket(now);
+        ResolvePendingWidgetDrops(now);
         if (now >= _nextRunSave)
         {
             _nextRunSave = now + 4000;
@@ -551,7 +555,8 @@ public partial class MapDropStatistics
         if (key == null)
             return;
         var count = Math.Max(item.GetComponent<Stack>()?.Size ?? 1, 1);
-        if (_groundDrops.TryGetValue(world.Id, out var previous))
+        var previouslySeen = _groundDrops.TryGetValue(world.Id, out var previous);
+        if (previouslySeen)
         {
             if (previous.Key != key)
             {
@@ -569,7 +574,9 @@ public partial class MapDropStatistics
         {
             GetRunLoot(key).Dropped += count;
         }
-        _groundDrops[world.Id] = new GroundDrop(key, count, world.GridPosNum, world.Address);
+        _groundDrops[world.Id] = new GroundDrop(key, count, world.GridPosNum, world.Address, _inMirage);
+        if (!previouslySeen || previous.Key != key || previous.InMirage != _inMirage)
+            ObserveWidgetDrop(world, item, key);
     }
 
     private MapLoot GetRunLoot(LootKey key)

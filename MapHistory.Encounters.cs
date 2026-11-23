@@ -1,13 +1,22 @@
+using System.Text.Json.Serialization;
+
 namespace MapDropStatistics;
 
 internal sealed record MapEncounterProgress(int LegionSeen = 0, int LegionClosed = 0, int AbyssSeen = 0,
-    int AbyssClosed = 0, bool MirageActivated = false, bool DeliriumStarted = false);
+    int AbyssClosed = 0, bool MirageActivated = false, bool DeliriumStarted = false)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool WildwoodEntered { get; init; }
+}
 
 internal enum ProgressEncounter { None, Legion, EndlessLegion, Abyss, Mirage, Delirium }
 
 internal static class EncounterProgressRules
 {
     internal const string DeliriumMirror = "Metadata/MiscellaneousObjects/Affliction/AfflictionInitiator";
+    internal const string LegionShatteredState = "shattered";
+    internal const string WildwoodAreaId = "AzmeriLeagueArea";
+    internal const string WildwoodInsideSignal = "IsInsideAzmeriZone = true";
 
     public static ProgressEncounter Identify(string metadata) => metadata switch
     {
@@ -34,11 +43,12 @@ internal static class EncounterProgressRules
         _ => null
     };
 
-    // Abyss transition 3 closes a failed pit. Transition 4 closes a successful pit.
-    public static bool IsComplete(ProgressEncounter kind, long state) => kind switch
+    public static bool IsComplete(ProgressEncounter kind, long? state, long? legionShattered = null) => kind switch
     {
-        ProgressEncounter.Legion => state == 4,
+        // The normal and forced monoliths hide their minimap marker at shattered=2.
+        ProgressEncounter.Legion => state == 4 || legionShattered == 2,
         ProgressEncounter.EndlessLegion => state == 5,
+        // Abyss transition 3 closes a failed pit. Transition 4 closes a successful pit.
         ProgressEncounter.Abyss => state == 4,
         ProgressEncounter.Mirage or ProgressEncounter.Delirium => state == 1,
         _ => false

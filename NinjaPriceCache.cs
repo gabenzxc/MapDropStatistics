@@ -52,13 +52,15 @@ internal sealed class NinjaPriceCache
         return prices;
     }
 
-    public double? FindLoot(MapLoot item)
+    public double? FindLoot(MapLoot item) => FindLoot(item.Name, item.Category, item.MapTier);
+
+    public double? FindLoot(string name, string category, int? mapTier)
     {
-        if (item.Category == "Unique")
-            return UniquePrices.TryGetValue(item.Name, out var unique) ? unique : null;
-        if (item.Category == "Map" || item.Name == NightmareMap)
-            return FindMap(item.Name, item.MapTier);
-        return item.Category is "Magic" or "Rare" ? null : Find(item.Name);
+        if (category == "Unique")
+            return UniquePrices.TryGetValue(name, out var unique) ? unique : null;
+        if (category == "Map" || name == NightmareMap)
+            return FindMap(name, mapTier);
+        return category is "Magic" or "Rare" ? null : Find(name);
     }
 
     private void ReadUniquePrices(JsonElement root)

@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using System.Threading;
 using ExileCore.Shared.Enums;
 using SharpDX;
 using Vector2 = System.Numerics.Vector2;
@@ -9,24 +8,13 @@ namespace MapDropStatistics;
 
 public partial class MapDropStatistics
 {
-    private const int WidgetT0HighlightMs = 8000;
     private const float EncounterBarWidth = 56;
     private long _lastWidgetUpdate;
     private LiveWidget _measuredWidget;
-    private string _measuredT0DropName;
     private WidgetLayout _widgetLayout;
-    private WidgetT0Drop _widgetT0Drop;
 
     private sealed record WidgetLayout(WidgetRow[] Rows, float Width, float Height, float Padding, float LineHeight,
         float CurrentOffset, float SessionOffset, float InlineOffset);
-    private sealed record WidgetT0Drop(string Name, long DetectedAt);
-
-    private void NotifyWidgetT0Drop(string name)
-    {
-        if (_activeRun is { } run && _history?.GetSummary(run.Id)?.ExcludedFromStatistics == true)
-            return;
-        Volatile.Write(ref _widgetT0Drop, new WidgetT0Drop(name, Environment.TickCount64));
-    }
 
     private WidgetSettings GetWidgetDefaults()
     {
@@ -78,48 +66,45 @@ public partial class MapDropStatistics
         var widget = _history?.ReadWidget();
         if (widget?.Data is not { InGame: true } data || !widget.Settings.Enabled ||
             (!data.InMap && !widget.Settings.ShowOutsideMaps) || !CanDrawWidget(widget.Settings))
-            return;
-
-        var t0Drop = Volatile.Read(ref _widgetT0Drop);
-        var elapsed = t0Drop == null ? WidgetT0HighlightMs : Environment.TickCount64 - t0Drop.DetectedAt;
-        var highlight = !data.MapExcluded && elapsed < WidgetT0HighlightMs;
-        var t0DropName = highlight ? t0Drop.Name : null;
-        var highlightRow = widget.Settings.Shows("last-t0") ? "last-t0" : "t0";
-        var pulse = highlight ? (0.7 + 0.3 * Math.Cos(Math.Tau * elapsed / 1800)) *
-            Math.Min(1, (WidgetT0HighlightMs - elapsed) / 1400d) : 0;
-
-        if (widget != _measuredWidget || t0DropName != _measuredT0DropName)
         {
-            _widgetLayout = MeasureWidget(widget, t0DropName);
+            ClearWidgetDropTexture();
+            return;
+        }
+
+        if (widget != _measuredWidget)
+        {
+            _widgetLayout = MeasureWidget(widget);
             _measuredWidget = widget;
-            _measuredT0DropName = t0DropName;
         }
         var layout = _widgetLayout;
         var window = GameController.Window.GetWindowRectangle();
-        var x = Math.Max(0, window.Width - layout.Width) * widget.Settings.X / 100f;
-        var y = Math.Max(0, window.Height - layout.Height) * widget.Settings.Y / 100f;
-        var bounds = new RectangleF(x, y, layout.Width, layout.Height);
+        var now = Environment.TickCount64;
+        var alert = data.InMap && !data.MapExcluded ? GetWidgetDropToShow(now) : null;
+        var width = alert == null ? layout.Width : Math.Max(layout.Width, 180);
+        var height = alert == null ? layout.Height : Math.Max(layout.Height, 144);
+        var x = Math.Max(0, window.Width - width) * widget.Settings.X / 100f;
+        var y = Math.Max(0, window.Height - height) * widget.Settings.Y / 100f;
+        var bounds = new RectangleF(x, y, width, height);
+        if (alert != null)
+        {
+            DrawWidgetDrop(alert, bounds, now, layout.LineHeight);
+            return;
+        }
+
+        ClearWidgetDropTexture();
         var alpha = (byte)(255 * widget.Settings.Opacity / 100);
         Graphics.DrawBox(bounds, new Color((byte)19, (byte)25, (byte)21, alpha), 8);
         Graphics.DrawFrame(bounds, new Color(66, 79, 66, 255), 8, 1, (int)ImGuiNET.ImDrawFlags.RoundCornersAll);
-        if (highlight)
-            Graphics.DrawFrame(bounds, new Color((byte)250, (byte)194, (byte)85, (byte)(235 * pulse)), 8, 2,
-                (int)ImGuiNET.ImDrawFlags.RoundCornersAll);
         x += layout.Padding;
         y += layout.Padding;
         Graphics.DrawText(data.Area, new Vector2(x, y), new Color(235, 198, 132, 255), FontAlign.Left);
         y += layout.LineHeight;
         foreach (var row in layout.Rows)
         {
-            var highlightThisRow = highlight && row.Id == highlightRow;
-            var labelColor = highlightThisRow ? new Color(255, 219, 145, 255) : new Color(184, 195, 181, 255);
-            if (highlightThisRow)
-                Graphics.DrawBox(new RectangleF(x - 4, y, layout.Width - 2 * layout.Padding + 8, layout.LineHeight),
-                    new Color((byte)168, (byte)110, (byte)43, (byte)(180 * pulse)), 4);
-            Graphics.DrawText(row.Label, new Vector2(x, y), labelColor, FontAlign.Left);
+            Graphics.DrawText(row.Label, new Vector2(x, y), new Color(184, 195, 181, 255), FontAlign.Left);
             var currentOffset = row.Inline ? layout.InlineOffset : layout.CurrentOffset;
             var currentColor = row.Current == "—" ? new Color(125, 136, 123, 255) : WidgetAccent(row.AccentRgb, 255);
-            Graphics.DrawText(row.Current, new Vector2(x + currentOffset, y), highlightThisRow ? labelColor : currentColor, FontAlign.Left);
+            Graphics.DrawText(row.Current, new Vector2(x + currentOffset, y), currentColor, FontAlign.Left);
             if (row.Progress is { } progress)
             {
                 var bar = new RectangleF(x + layout.SessionOffset, y + (layout.LineHeight - 5) / 2, EncounterBarWidth, 5);
@@ -134,11 +119,11 @@ public partial class MapDropStatistics
         }
     }
 
-    private WidgetLayout MeasureWidget(LiveWidget widget, string t0DropName)
+    private WidgetLayout MeasureWidget(LiveWidget widget)
     {
         var rows = widget.Data.Rows.Where(row => widget.Settings.Shows(row.Id))
             .Select(row => row with { Label = ClipWidgetText(row.Label),
-                Current = ClipWidgetText(row.Inline ? t0DropName ?? row.Current : row.Current) }).ToArray();
+                Current = ClipWidgetText(row.Current) }).ToArray();
         var padding = widget.Settings.Compact ? 7f : 10f;
         var gap = widget.Settings.Compact ? 7f : 10f;
         var lineHeight = Graphics.MeasureText("Ag").Y + (widget.Settings.Compact ? 2 : 4);

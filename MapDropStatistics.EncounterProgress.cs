@@ -46,15 +46,24 @@ public partial class MapDropStatistics
     private static void ReadEncounterState(ObservedEncounter observed)
     {
         var entity = observed.Entity;
-        if (observed.Complete || !entity.IsValid)
+        if (observed.Complete || !entity.IsValid || EncounterProgressRules.Identify(entity.Metadata) != observed.Kind)
             return;
 
-        long? state = observed.Kind == ProgressEncounter.Abyss
-            ? entity.GetComponent<Transitionable>()?.Flag1
-            : entity.GetComponent<StateMachine>()?.States?
-                .FirstOrDefault(state => state.Name == EncounterProgressRules.SharedState(observed.Kind))?.Value;
-        if (state.HasValue)
-            observed.Complete = EncounterProgressRules.IsComplete(observed.Kind, state.Value);
+        if (observed.Kind == ProgressEncounter.Abyss)
+        {
+            observed.Complete = EncounterProgressRules.IsComplete(observed.Kind, entity.GetComponent<Transitionable>()?.Flag1);
+            return;
+        }
+
+        var states = entity.GetComponent<StateMachine>()?.States;
+        if (states == null)
+            return;
+        var stateName = EncounterProgressRules.SharedState(observed.Kind);
+        var state = states.FirstOrDefault(state => state.Name == stateName)?.Value;
+        var shattered = observed.Kind == ProgressEncounter.Legion
+            ? states.FirstOrDefault(state => state.Name == EncounterProgressRules.LegionShatteredState)?.Value
+            : null;
+        observed.Complete = EncounterProgressRules.IsComplete(observed.Kind, state, shattered);
     }
 
     private void UpdateEncounterProgress(long now)
@@ -90,10 +99,8 @@ public partial class MapDropStatistics
             {
                 var entity = EntityListWrapper.GetEntityById(id);
                 if (entity?.IsValid == true && EncounterProgressRules.Identify(entity.Metadata) == encounter.Kind)
-                {
                     encounter.Entity = entity;
-                    ReadEncounterState(encounter);
-                }
+                ReadEncounterState(encounter);
             }
             switch (encounter.Kind)
             {
@@ -119,7 +126,10 @@ public partial class MapDropStatistics
         if (legionSeen == 0 && abyssSeen == 0 && !mirageActivated && !deliriumStarted)
             return;
 
-        var progress = new MapEncounterProgress(legionSeen, legionClosed, abyssSeen, abyssClosed, mirageActivated, deliriumStarted);
+        var progress = new MapEncounterProgress(legionSeen, legionClosed, abyssSeen, abyssClosed, mirageActivated, deliriumStarted)
+        {
+            WildwoodEntered = _activeRun.EncounterProgress?.WildwoodEntered == true
+        };
         if (progress != _activeRun.EncounterProgress)
         {
             _activeRun.EncounterProgress = progress;
