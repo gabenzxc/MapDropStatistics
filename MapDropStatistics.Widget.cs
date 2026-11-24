@@ -48,8 +48,9 @@ public partial class MapDropStatistics
         var inMap = IsTrackableArea(area);
         var mapSeconds = inMap && _trackingCurrentArea && _currentAreaStartedUtc != default
             ? (DateTime.UtcNow - _currentAreaStartedUtc).TotalSeconds : (double?)null;
-        _history.PublishWidget(session, _activeRun?.Id, area?.Name ?? "Waiting for game", inGame, inMap,
-            mapSeconds);
+        var run = _activeRun;
+        _history.PublishWidget(session, run?.Id, area?.Name ?? "Waiting for game", inGame, inMap, mapSeconds,
+            run?.SessionId);
     }
 
     private bool CanDrawWidget(WidgetSettings settings)

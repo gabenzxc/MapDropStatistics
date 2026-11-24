@@ -80,7 +80,7 @@ internal sealed partial class MapHistory
     private sealed record WidgetSessionStats(Guid SessionId, DropAverageResult Drops, int Failed, double MapSeconds,
         int TimedMaps, double PickupValue, double Quantity, double Rarity, string LastT0Unique);
     private sealed record WidgetContext(Guid SessionId, Guid? MapId, string Area, bool InGame, bool InMap,
-        double? MapSeconds);
+        double? MapSeconds, Guid? MapSessionId);
 
     public LiveWidget ReadWidget() => Volatile.Read(ref _liveWidget);
 
@@ -160,14 +160,15 @@ internal sealed partial class MapHistory
         }
     }
 
-    public void PublishWidget(Guid sessionId, Guid? mapId, string area, bool inGame, bool inMap, double? mapSeconds) =>
-        PublishWidget(new WidgetContext(sessionId, mapId, area, inGame, inMap, mapSeconds));
+    public void PublishWidget(Guid sessionId, Guid? mapId, string area, bool inGame, bool inMap, double? mapSeconds,
+        Guid? mapSessionId = null) =>
+        PublishWidget(new WidgetContext(sessionId, mapId, area, inGame, inMap, mapSeconds, mapSessionId));
 
     private void PublishWidget(WidgetContext context)
     {
         lock (_gate)
         {
-            var (sessionId, mapId, area, inGame, inMap, mapSeconds) = context;
+            var (sessionId, mapId, area, inGame, inMap, mapSeconds, mapSessionId) = context;
             var session = _sessions.Sessions.FirstOrDefault(candidate => candidate.Id == sessionId);
             if (session == null || sessionId != _sessions.ActiveId)
                 return;
@@ -179,7 +180,7 @@ internal sealed partial class MapHistory
             var totals = GetWidgetSessionStats(sessionId, statNames);
             var current = mapId is { } id ? CurrentIndex.GetValueOrDefault(id) : null;
             var mapExcluded = current?.ExcludedFromStatistics == true ||
-                (mapId.HasValue && _deletedRuns.Contains(mapId.Value));
+                (mapId.HasValue && IsMapDeleted(mapId.Value, mapSessionId));
             if (mapExcluded)
             {
                 current = null;

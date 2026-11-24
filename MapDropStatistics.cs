@@ -823,6 +823,11 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         if (!_trackingCurrentArea && !_hasPausedTrackableArea)
             return;
+        if (_activeRun is { } run && _history?.IsDeleted(run.Id, run.SessionId) == true)
+        {
+            _hasPausedTrackableArea = false;
+            return;
+        }
 
         UpdateLiveTimers();
         CommitFinalMapModifierStats();
@@ -1412,7 +1417,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     {
         if (!Settings.Actions.SaveMapStats && !IsSaveLockedArea(_currentAreaName))
             return;
-        if (_activeRun is { } run && _history?.IsDeleted(run.Id) == true)
+        if (_activeRun is { } run && _history?.IsDeleted(run.Id, run.SessionId) == true)
             return;
 
         PrunePendingDrops();

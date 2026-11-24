@@ -91,7 +91,7 @@ public partial class MapDropStatistics
     private void QueueWidgetDrop((bool InMirage, uint EntityId) id, string name, string artPath, bool isT0, double? unitDivine)
     {
         var run = _activeRun;
-        if (run == null || _history == null || _history.IsDeleted(run.Id) ||
+        if (run == null || _history == null || _history.IsDeleted(run.Id, run.SessionId) ||
             _history.GetSummary(run.Id)?.ExcludedFromStatistics == true ||
             (!isT0 && _history.IsIgnoredItem(name)) || !_announcedWidgetDrops.Add(id))
             return;

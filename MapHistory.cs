@@ -241,7 +241,8 @@ internal sealed record MinimumItemPrice(double Value, string Currency)
 internal sealed record SessionBook(Guid ActiveId, Guid InitialId, Guid? PreviousId, DateTime LegacyCutoffUtc,
     bool IncludeUniquePrices, FarmingSession[] Sessions, string[] IgnoredItems = null, double? IgnoreAtOrBelowDivine = null,
     MinimumItemPrice MinimumPrice = null, MapCostSettings MapCosts = null, WidgetSettings Widget = null,
-    double? LegacyMapPriceDivine = null)
+    double? LegacyMapPriceDivine = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Dictionary<Guid, Guid[]> DeletedSessions = null)
 {
     public MinimumItemPrice GetMinimumPrice() =>
         MinimumPrice ?? (IgnoreAtOrBelowDivine is { } amount ? new MinimumItemPrice(amount, "divine") : null);
@@ -415,6 +416,8 @@ internal sealed partial class MapHistory
               throw new JsonException("Empty deleted-map archive")
             : [];
         _sessions = LoadSessions(logError);
+        if (_sessions.DeletedSessions != null)
+            _deletedRuns.UnionWith(_sessions.DeletedSessions.Values.SelectMany(ids => ids));
         if (!_sessions.LegacyMapPriceDivine.HasValue)
             SaveSessions(_sessions with { LegacyMapPriceDivine = DefaultMapPriceDivine });
         _liveWidget = new LiveWidget(_sessions.Widget ?? widgetDefaults ?? new WidgetSettings(), null);
@@ -424,7 +427,7 @@ internal sealed partial class MapHistory
             try
             {
                 var run = Read(file);
-                if (_deletedRuns.Contains(run.Id))
+                if (IsMapDeleted(run.Id, ResolveSession(run)))
                 {
                     DeleteRecordFile(file);
                     continue;
@@ -660,6 +663,38 @@ internal sealed partial class MapHistory
         }
     }
 
+    public bool DeleteSession(Guid id)
+    {
+        lock (_gate)
+        {
+            if (_sessions.DeletedSessions?.ContainsKey(id) == true)
+                return true;
+            if (!_sessions.Sessions.Any(session => session.Id == id))
+                return false;
+
+            var mapIds = _index.Values.Where(map => map.SessionId == id).Select(map => map.Id).ToArray();
+            var sessions = _sessions.Sessions.Where(session => session.Id != id).ToArray();
+            var activeId = _sessions.ActiveId;
+            var deletingActive = activeId == id;
+            if (deletingActive)
+            {
+                var next = new FarmingSession(Guid.NewGuid(), DateTime.UtcNow, null);
+                activeId = next.Id;
+                sessions = [.. sessions, next];
+            }
+
+            // Persist the session removal and the map IDs together before deleting any files.
+            var deleted = new Dictionary<Guid, Guid[]>(_sessions.DeletedSessions ?? []) { [id] = mapIds };
+            SaveSessions(_sessions with { ActiveId = activeId, Sessions = sessions, DeletedSessions = deleted });
+            if (deletingActive && _hideoutStartedAt.HasValue)
+                _hideoutStartedAt = _hideoutSavedThrough = Environment.TickCount64;
+            foreach (var mapId in mapIds)
+                RemoveDeletedMap(mapId);
+            RefreshAfterDeletion();
+            return true;
+        }
+    }
+
     private void ChangeActiveSession(Guid id, FarmingSession added = null)
     {
         var now = Environment.TickCount64;
@@ -747,7 +782,7 @@ internal sealed partial class MapHistory
 
         lock (_gate)
         {
-            if (_deletedRuns.Contains(run.Id))
+            if (IsMapDeleted(run.Id, ResolveSession(run)))
                 return;
             Write(run);
             Index(run);
@@ -780,11 +815,14 @@ internal sealed partial class MapHistory
         return true;
     }, touchTimestamp: false);
 
-    public bool IsDeleted(Guid id)
+    public bool IsDeleted(Guid id, Guid? sessionId = null)
     {
         lock (_gate)
-            return _deletedRuns.Contains(id);
+            return IsMapDeleted(id, sessionId);
     }
+
+    private bool IsMapDeleted(Guid id, Guid? sessionId = null) => _deletedRuns.Contains(id) ||
+        (sessionId is { } session && _sessions.DeletedSessions?.ContainsKey(session) == true);
 
     public bool DeleteMap(Guid id)
     {
@@ -797,21 +835,30 @@ internal sealed partial class MapHistory
 
             // Commit the deletion before touching the map file so a checkpoint or import cannot restore it.
             WriteAtomic(DeletedRunsPath, _deletedRuns.Append(id).ToArray());
-            _deletedRuns.Add(id);
-            _index.Remove(id);
-            _indexWithUniques.Remove(id);
-            _sessionLoot.Remove(id);
-            _uniqueDrops.Remove(id);
-            _liveMapEdits.Remove(id);
-            _pendingPriceRuns.Remove(id);
-            _sessionDrops.Clear();
-            _widgetSessionStats = null;
-
-            DeleteRecordFile(FilePath(id));
-            if (_widgetContext != null)
-                PublishWidget(_widgetContext);
+            RemoveDeletedMap(id);
+            RefreshAfterDeletion();
             return true;
         }
+    }
+
+    private void RemoveDeletedMap(Guid id)
+    {
+        _deletedRuns.Add(id);
+        _index.Remove(id);
+        _indexWithUniques.Remove(id);
+        _sessionLoot.Remove(id);
+        _uniqueDrops.Remove(id);
+        _liveMapEdits.Remove(id);
+        _pendingPriceRuns.Remove(id);
+        DeleteRecordFile(FilePath(id));
+    }
+
+    private void RefreshAfterDeletion()
+    {
+        _sessionDrops.Clear();
+        _widgetSessionStats = null;
+        if (_widgetContext is { } context)
+            PublishWidget(context with { SessionId = _sessions.ActiveId });
     }
 
     private void DeleteRecordFile(string path)
@@ -954,7 +1001,7 @@ internal sealed partial class MapHistory
     {
         lock (_gate)
         {
-            if (_deletedRuns.Contains(run.Id))
+            if (IsMapDeleted(run.Id, ResolveSession(run)))
                 return;
             if (!_liveMapEdits.TryGetValue(run.Id, out var edits) && Get(run.Id) is { } saved)
                 edits = LiveMapEdits.FromRun(saved);

@@ -303,7 +303,7 @@ td small { display: block; color: var(--muted); font-size: .8rem; }
 .button:hover { border-color: var(--sage); }
 .button.danger { color: var(--red); }
 .button.danger:hover { border-color: var(--red); }
-#confirm-delete-map { background: #402724; border-color: #81524a; }
+#confirm-delete-map, #confirm-delete-session { background: #402724; border-color: #81524a; }
 .more { width: 100%; margin-top: 8px; }
 .primary { background: var(--gold); color: #272013; border-color: var(--gold); font-weight: 650; }
 .modifiers { list-style: none; margin: 0; padding: 0; }

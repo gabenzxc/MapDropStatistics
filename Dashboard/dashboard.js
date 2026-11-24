@@ -159,6 +159,8 @@ async function refresh(force = false) {
     const [maps, sessions, widget] = await Promise.all([request("/api/maps"), request("/api/sessions"),
       request("/api/widget").catch(() => null)]);
     if (requestId !== latestRequest) return;
+    if (!["active", "all", "favorites"].includes(state.sessionView) &&
+        !sessions.sessions.some(session => session.id === state.sessionView)) state.sessionView = "active";
     const selection = state.sessionView === "active" ? sessions.activeId : state.sessionView;
     const session = await request(`/api/session?session=${encodeURIComponent(selection)}&pickup=${state.pickupScope}`).catch(() => null);
     if (requestId !== latestRequest) return;
@@ -225,6 +227,7 @@ function renderSessionControls() {
   if (!options.some(option => option[1] === state.sessionView)) state.sessionView = "active";
   select.value = state.sessionView;
   $("open-rename-session").hidden = !selectedHistorySession();
+  $("open-delete-session").hidden = $("open-rename-session").hidden;
   $("resume-session").hidden = !archive.some(session => session.id === state.sessionView);
   $("unique-prices").checked = state.sessions.includeUniquePrices;
   const threshold = state.sessions.failUniqueThreshold;
@@ -1592,33 +1595,52 @@ $("open-delete-map").addEventListener("click", () => {
   const map = state.maps.find(entry => entry.id === state.detail?.id);
   if (!map) return;
   const dialog = $("delete-map-dialog");
-  dialog.dataset.mapId = map.id;
+  dialog.dataset.recordId = map.id;
   set("delete-map-record", `${map.name} · ${dateLabel(map.startedUtc)}`);
   set("delete-map-status", "");
   dialog.showModal();
 });
-$("delete-map-dialog").addEventListener("cancel", event => {
-  if ($("confirm-delete-map").disabled) event.preventDefault();
+$("open-delete-session").addEventListener("click", () => {
+  const session = selectedHistorySession();
+  if (!session) return;
+  const dialog = $("delete-session-dialog");
+  dialog.dataset.recordId = session.id;
+  const count = state.maps.filter(map => map.sessionId === session.id).length;
+  set("delete-session-record", `${session.name ?? dateLabel(session.startedUtc)} · ${number.format(count)} ${count === 1 ? "map" : "maps"}`);
+  set("delete-session-status", "");
+  dialog.showModal();
 });
-$("delete-map-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const dialog = $("delete-map-dialog");
-  const confirm = $("confirm-delete-map");
-  const cancel = $("cancel-delete-map");
-  if (confirm.disabled) return;
-  confirm.disabled = cancel.disabled = true;
-  set("delete-map-status", "");
-  try {
-    await request(`/api/maps/${dialog.dataset.mapId}/delete`, true);
-    dialog.close();
-    hoverIndex = -1;
-    await refresh(true);
-  } catch {
-    set("delete-map-status", "Could not delete this map.");
-  } finally {
-    confirm.disabled = cancel.disabled = false;
-  }
-});
+for (const kind of ["map", "session"]) {
+  const dialog = $(`delete-${kind}-dialog`);
+  const confirm = $(`confirm-delete-${kind}`);
+  const cancel = $(`cancel-delete-${kind}`);
+  dialog.addEventListener("cancel", event => {
+    if (confirm.disabled) event.preventDefault();
+  });
+  $(`delete-${kind}-form`).addEventListener("submit", async event => {
+    event.preventDefault();
+    if (confirm.disabled) return;
+    confirm.disabled = cancel.disabled = true;
+    set(`delete-${kind}-status`, "");
+    try {
+      const id = dialog.dataset.recordId;
+      if (kind === "session") {
+        await request("/api/sessions/delete", id);
+        state.sessionView = "active";
+        state.visible = 25;
+      } else {
+        await request(`/api/maps/${id}/delete`, true);
+      }
+      dialog.close();
+      hoverIndex = -1;
+      await refresh(true);
+    } catch {
+      set(`delete-${kind}-status`, `Could not delete this ${kind}.`);
+    } finally {
+      confirm.disabled = cancel.disabled = false;
+    }
+  });
+}
 $("cost-settings-form").addEventListener("submit", async event => {
   event.preventDefault();
   const costs = { mapPriceDivine: $("default-map-price").valueAsNumber };
@@ -1716,7 +1738,7 @@ $("session-view").addEventListener("change", event => {
 });
 
 async function changeSessionSetting(action, errorMessage) {
-  const controls = ["new-session", "open-rename-session", "resume-session", "session-view", "unique-prices"].map($);
+  const controls = ["new-session", "open-rename-session", "open-delete-session", "resume-session", "session-view", "unique-prices"].map($);
   for (const control of controls) control.disabled = true;
   set("session-control-status", "");
   try {

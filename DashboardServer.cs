@@ -208,7 +208,7 @@ internal sealed class DashboardServer : IDisposable
                 await SendJson(response, drops).ConfigureAwait(false);
                 return;
             }
-            if (request.HttpMethod == "POST" && path is "/api/sessions" or "/api/sessions/active" or "/api/sessions/rename" or
+            if (request.HttpMethod == "POST" && path is "/api/sessions" or "/api/sessions/active" or "/api/sessions/rename" or "/api/sessions/delete" or
                 "/api/settings/unique-prices" or "/api/settings/ignored-items" or "/api/settings/minimum-item-price")
             {
                 if (!ValidateEdit(request, response))
@@ -231,6 +231,11 @@ internal sealed class DashboardServer : IDisposable
                         return;
                     }
                     response.StatusCode = _history.RenameSession(rename.SessionId, name) ? 204 : 404;
+                }
+                else if (path == "/api/sessions/delete")
+                {
+                    var id = await JsonSerializer.DeserializeAsync<Guid>(request.InputStream, MapHistory.Json).ConfigureAwait(false);
+                    response.StatusCode = _history.DeleteSession(id) ? 204 : 404;
                 }
                 else if (path == "/api/settings/unique-prices")
                 {
