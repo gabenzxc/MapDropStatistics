@@ -1,5 +1,5 @@
 # One unique name per line.
-# Add your full T0 list here.
+# Built-in defaults. Edit the active list in the dashboard.
 Bino's Kitchen Knife
 Bloodseeker
 Defiance of Destiny

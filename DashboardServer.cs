@@ -17,7 +17,8 @@ internal sealed class DashboardServer : IDisposable
         ["/"] = ("index.html", "text/html; charset=utf-8"),
         ["/dashboard.css"] = ("dashboard.css", "text/css; charset=utf-8"),
         ["/dashboard.js"] = ("dashboard.js", "text/javascript; charset=utf-8"),
-        ["/comparison.js"] = ("comparison.js", "text/javascript; charset=utf-8")
+        ["/comparison.js"] = ("comparison.js", "text/javascript; charset=utf-8"),
+        ["/collection.js"] = ("collection.js", "text/javascript; charset=utf-8")
     };
     private static readonly (string Key, string Item)[] DropAverageMetricIcons =
     [
@@ -112,6 +113,21 @@ internal sealed class DashboardServer : IDisposable
                 await SendJson(response, _history.ListSessions()).ConfigureAwait(false);
                 return;
             }
+            if (request.HttpMethod == "GET" && path == "/api/collection")
+            {
+                var collection = _history.GetCollection();
+                if (_icons != null)
+                {
+                    var icons = await _icons.Get(collection.League).ConfigureAwait(false);
+                    collection = collection with
+                    {
+                        Currency = collection.Currency.Select(item => item with { Icon = icons.GetValueOrDefault(item.Name) }).ToArray(),
+                        T0Uniques = collection.T0Uniques.Select(item => item with { Icon = icons.GetValueOrDefault(item.Name) }).ToArray()
+                    };
+                }
+                await SendJson(response, collection).ConfigureAwait(false);
+                return;
+            }
             if (request.HttpMethod == "GET" && path == "/api/pricing-status")
             {
                 await SendJson(response, _pricingStatus?.Invoke()).ConfigureAwait(false);
@@ -120,6 +136,31 @@ internal sealed class DashboardServer : IDisposable
             if (request.HttpMethod == "GET" && path == "/api/widget")
             {
                 await SendJson(response, _history.ReadWidgetForDashboard()).ConfigureAwait(false);
+                return;
+            }
+            if (path is "/api/settings/t0-uniques" or "/api/settings/additional-areas" && request.HttpMethod is "GET" or "POST")
+            {
+                var isT0UniqueList = path == "/api/settings/t0-uniques";
+                if (request.HttpMethod == "GET")
+                {
+                    await SendJson<object>(response, isT0UniqueList ? _history.GetT0UniqueSettings() :
+                        new { Names = _history.GetAdditionalAreaNames() }).ConfigureAwait(false);
+                    return;
+                }
+                if (!ValidateEdit(request, response, maxBodyBytes: 65536))
+                    return;
+                var names = await JsonSerializer.DeserializeAsync<string[]>(request.InputStream, MapHistory.Json)
+                    .ConfigureAwait(false);
+                if (names == null || names.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 240 || name.Any(char.IsControl)))
+                {
+                    response.StatusCode = 400;
+                    return;
+                }
+                if (isT0UniqueList)
+                    _history.SetT0UniqueNames(names);
+                else
+                    _history.SetAdditionalAreaNames(names);
+                response.StatusCode = 204;
                 return;
             }
             if (request.HttpMethod == "POST" && path == "/api/settings/widget")
@@ -272,40 +313,41 @@ internal sealed class DashboardServer : IDisposable
             if (request.HttpMethod == "GET" && path == "/api/session")
             {
                 var selection = request.QueryString["session"];
-                var pickup = request.QueryString["pickup"];
+                var scope = ParseLootScope(request.QueryString["pickup"]);
                 if ((selection is not (null or "all" or "favorites") && !Guid.TryParse(selection, out _)) ||
-                    pickup is not (null or "all" or "personal" or "party"))
+                    scope == null)
                 {
                     response.StatusCode = 400;
                     return;
                 }
-                var scope = pickup switch
-                {
-                    "personal" => LootScope.Personal,
-                    "party" => LootScope.Party,
-                    _ => LootScope.All
-                };
                 var id = selection switch
                 {
                     null => (Guid?)null,
                     "all" or "favorites" => Guid.Empty,
                     _ => Guid.Parse(selection)
                 };
-                var session = _history.GetSessionDrops(id, scope, favoritesOnly: selection == "favorites");
+                var session = _history.GetSessionDrops(id, scope.Value, favoritesOnly: selection == "favorites");
                 if (session == null)
                 {
                     response.StatusCode = 404;
                     return;
                 }
-                if (_icons != null && session.Items.Length > 0)
+                await SendSessionDrops(response, session).ConfigureAwait(false);
+                return;
+            }
+            if (request.HttpMethod == "POST" && path == "/api/session-drops")
+            {
+                if (!ValidateEdit(request, response, maxBodyBytes: 1024 * 1024))
+                    return;
+                var selection = await JsonSerializer.DeserializeAsync<MapDropSelection>(request.InputStream, MapHistory.Json)
+                    .ConfigureAwait(false);
+                var scope = ParseLootScope(selection?.Pickup);
+                if (selection?.MapIds == null || scope == null)
                 {
-                    var icons = await _icons.Get(session.League).ConfigureAwait(false);
-                    session = session with
-                    {
-                        Items = session.Items.Select(item => item with { Icon = icons.GetValueOrDefault(item.Name) }).ToArray()
-                    };
+                    response.StatusCode = 400;
+                    return;
                 }
-                await SendJson(response, session).ConfigureAwait(false);
+                await SendSessionDrops(response, _history.GetSelectedMapDrops(selection.MapIds, scope.Value)).ConfigureAwait(false);
                 return;
             }
 
@@ -407,6 +449,28 @@ internal sealed class DashboardServer : IDisposable
     }
 
     private static bool IsValidMapPrice(double price) => double.IsFinite(price) && price is >= 0 and <= 1000000;
+
+    private static LootScope? ParseLootScope(string pickup) => pickup switch
+    {
+        null or "all" => LootScope.All,
+        "personal" => LootScope.Personal,
+        "party" => LootScope.Party,
+        "left" => LootScope.LeftOnGround,
+        _ => null
+    };
+
+    private async Task SendSessionDrops(HttpListenerResponse response, SessionDrops session)
+    {
+        if (_icons != null && session.Items.Length > 0)
+        {
+            var icons = await _icons.Get(session.League).ConfigureAwait(false);
+            session = session with
+            {
+                Items = session.Items.Select(item => item with { Icon = icons.GetValueOrDefault(item.Name) }).ToArray()
+            };
+        }
+        await SendJson(response, session).ConfigureAwait(false);
+    }
 
     private bool ValidateEdit(HttpListenerRequest request, HttpListenerResponse response, int maxBodyBytes = 1024)
     {

@@ -45,7 +45,7 @@ public partial class MapDropStatistics
         var area = inGame ? GameController.Area.CurrentArea : null;
         _history.ObserveHideout(area?.IsHideout == true);
         var session = _history.ActiveSessionId;
-        var inMap = IsTrackableArea(area);
+        var inMap = inGame && _trackingCurrentArea;
         var mapSeconds = inMap && _trackingCurrentArea && _currentAreaStartedUtc != default
             ? (DateTime.UtcNow - _currentAreaStartedUtc).TotalSeconds : (double?)null;
         var run = _activeRun;

@@ -4,6 +4,9 @@
   const sides = ["a", "b"];
   const view = $("comparison-view");
   const selected = sides.map(side => $(`compare-${side}`));
+  const uniquePrices = $("compare-unique-prices");
+  const sampleMode = $("compare-sample-mode");
+  const resampleButton = $("compare-resample");
   const chart = $("compare-chart");
   const colors = sides.map(side => getComputedStyle(view).getPropertyValue(`--session-${side}`).trim());
   let summaries = [];
@@ -14,15 +17,47 @@
   let chartIndex = null;
   let chartScale = null;
   let opened = false;
+  let randomSample = null;
+  let uniquePricesOverride = null;
 
-  const isCompleted = map => includedInStatistics(map) && hasTracking(map) && map.state !== "active" && map.state !== "paused";
+  const isCompleted = map => includedInStatistics(map) && hasTracking(map) && isFinishedMap(map);
   const formatCount = value => value == null ? "—" : formatDivineNumber(value);
   const formatPercent = value => value == null ? "—" : `${formatDivineNumber(value)}%`;
-  const formatTime = value => value == null ? "—" : `${value < 0 ? "−" : ""}${duration(Math.round(Math.abs(value)))}`;
-  const dropBonusBadges = new Map([["More Currency", "CUR"], ["More Maps", "MAP"], ["More Threads", "THR"],
-    ["More Divination Cards", "DIV"], ["More Item Rarity", "IIR"], ["Increased Atlas Drops", "ATL"], ["Increased Maps", "MAP"]]);
 
-  function refreshComparison() {
+  function matchMapGroups(groups, mode, resample) {
+    if (mode === "all" || groups[0].length === groups[1].length) return groups;
+    const count = Math.min(groups[0].length, groups[1].length);
+    if (!count) return [[], []];
+    const largerSide = groups[0].length > count ? 0 : 1;
+    const larger = groups[largerSide];
+    let sample;
+    if (mode === "first") sample = larger.slice(0, count);
+    else if (mode === "last") sample = larger.slice(-count);
+    else {
+      const key = JSON.stringify([selected.map(select => select.value).sort(), selected[largerSide].value]);
+      const eligible = new Set(larger.map(map => map.id));
+      const previous = randomSample?.key === key ? randomSample.ids.filter(id => eligible.has(id)) : [];
+      const ids = resample ? [] : previous.slice(0, count);
+      const retained = new Set(ids);
+      const available = larger.filter(map => !retained.has(map.id));
+      for (let index = 0, needed = count - ids.length; index < needed; index++) {
+        const draw = index + Math.floor(Math.random() * (available.length - index));
+        [available[index], available[draw]] = [available[draw], available[index]];
+        ids.push(available[index].id);
+      }
+      let picked = new Set(ids);
+      if (resample && previous.length === count && previous.every(id => picked.has(id))) {
+        const remainder = larger.filter(map => !picked.has(map.id));
+        ids[Math.floor(Math.random() * count)] = remainder[Math.floor(Math.random() * remainder.length)].id;
+        picked = new Set(ids);
+      }
+      randomSample = { key, ids };
+      sample = larger.filter(map => picked.has(map.id));
+    }
+    return groups.map((maps, side) => side === largerSide ? sample : maps);
+  }
+
+  function refreshComparison(resample = false) {
     if (view.hidden) return;
     const activeId = state.sessions?.activeId;
     const sessions = (state.sessions?.sessions ?? []).slice().reverse();
@@ -53,7 +88,10 @@
     const valid = sessions.length >= 2 && selected.every(select => select.value) && selected[0].value !== selected[1].value;
     $("compare-empty").hidden = valid;
     $("compare-results").hidden = !valid;
+    sampleMode.disabled = !valid;
+    resampleButton.disabled = true;
     if (!valid) {
+      set("compare-sample-status", "");
       set("compare-empty", !state.sessions ? "Loading sessions…" : sessions.length < 2
         ? "Save a second session to compare your maps." : "Choose two different sessions.");
       return;
@@ -61,19 +99,25 @@
 
     const mode = $("compare-profit").value;
     const scope = $("compare-pickup").value;
-    summaries = selected.map(select => summarize(select.value, bySession.get(select.value), mode, scope));
+    uniquePrices.checked = uniquePricesOverride ?? state.sessions?.includeUniquePrices ?? false;
+    const available = selected.map(select => bySession.get(select.value));
+    const matched = sampleMode.value !== "all";
+    const maps = matchMapGroups(available, sampleMode.value, resample);
+    resampleButton.disabled = sampleMode.value !== "random" || !maps[0].length || available[0].length === available[1].length;
+    set("compare-sample-status", !matched ? "" : !maps[0].length ? "Both sessions need recorded maps." :
+      maps.map((sample, side) => `${sides[side].toUpperCase()} · ${number.format(sample.length)} of ${number.format(available[side].length)} maps`).join(" | "));
+    summaries = selected.map((select, side) => summarize(select.value, maps[side], mode, scope, uniquePrices.checked));
     renderTotals(mode);
     renderMapAverages();
     drawComparisonChart();
-    loadComparisons(scope);
+    loadComparisons(scope, matched);
   }
 
-  function summarize(id, maps, mode, scope) {
+  function summarize(id, maps, mode, scope, includeUniquePrices) {
     let profit = 0, valued = 0, timedProfit = 0, timedSeconds = 0;
-    let divines = 0, uniques = 0, time = 0, timedMaps = 0;
-    let quantity = 0, rarity = 0, packSize = 0;
+    let divines = 0, uniques = 0;
     const points = maps.map(map => {
-      const value = mapProfit(map, mode, scope);
+      const value = mapProfit(map, mode, scope, includeUniquePrices);
       if (value != null) {
         profit += value;
         valued++;
@@ -84,20 +128,11 @@
       }
       divines += map.divineOrbsDropped;
       uniques += map.uniquesDropped;
-      quantity += map.quantity;
-      rarity += map.rarity;
-      packSize += map.packSize;
-      if (map.seconds > 0) {
-        time += map.seconds;
-        timedMaps++;
-      }
       return { profit: value, cumulative: value == null ? null : profit, divines: map.divineOrbsDropped, uniques: map.uniquesDropped };
     });
-    return { id, maps, points, valued, timedMaps, profit: valued ? profit : null, hour: timedSeconds ? timedProfit * 3600 / timedSeconds : null,
+    return { id, maps, points, valued, profit: valued ? profit : null, hour: timedSeconds ? timedProfit * 3600 / timedSeconds : null,
       averageProfit: valued ? profit / valued : null, divines, averageDivines: maps.length ? divines / maps.length : null,
-      uniques, averageUniques: maps.length ? uniques / maps.length : null,
-      averageQuantity: maps.length ? quantity / maps.length : null, averageRarity: maps.length ? rarity / maps.length : null,
-      averagePackSize: maps.length ? packSize / maps.length : null, averageTime: timedMaps ? time / timedMaps : null };
+      uniques, averageUniques: maps.length ? uniques / maps.length : null };
   }
 
   function appendValues(row, a, b, format, zeroDim = false) {
@@ -118,7 +153,7 @@
 
   function renderTotals(mode) {
     const labels = [
-      ["Recorded maps", summary => summary.maps.length, formatCount],
+      [sampleMode.value === "all" ? "Recorded maps" : "Maps compared", summary => summary.maps.length, formatCount],
       [mode === "net" ? "Net profit" : "Gross pickup value", summary => summary.profit, divines],
       ["Value / hour", summary => summary.hour, divines],
       ["Value / map", summary => summary.averageProfit, divines],
@@ -227,15 +262,19 @@
     tooltip.hidden = false;
   }
 
-  function loadComparisons(scope) {
-    const mapsKey = summaries.map(({ id, maps }) => [id, maps.map(map => [map.id, map.updatedUtc])]).sort();
+  function loadComparisons(scope, matched) {
+    const ordered = summaries.slice().sort((a, b) => a.id.localeCompare(b.id));
+    const mapsKey = ordered.map(({ id, maps }) => [id, maps.map(map => [map.id, map.updatedUtc])]);
     const valuation = [state.sessions?.includeUniquePrices, state.sessions?.minimumPrice, state.sessions?.ignoredItems];
-    // Match History's Session drops, including the live map when present.
-    const sessionKey = state.maps.filter(map => includedInStatistics(map) && summaries.some(summary => summary.id === map.sessionId)).map(map =>
+    // Full-session comparisons use the same drop totals as History, including live loot.
+    const lootMaps = matched ? ordered.flatMap(summary => summary.maps) :
+      state.maps.filter(map => includedInStatistics(map) && summaries.some(summary => summary.id === map.sessionId));
+    const sessionKey = lootMaps.map(map =>
       [map.id, map.updatedUtc, map.profitDivine, map.unpricedQuantity, map.leftDivine, map.leftUnpricedQuantity]);
     set("compare-session-title", scope === "personal" ? "Your pickups" : scope === "party" ? "Party pickups (est.)" : "Session drops");
-    loadPair("session", JSON.stringify([mapsKey.map(([id]) => id), sessionKey, valuation, scope]),
-      ({ id }) => request(`/api/session?session=${encodeURIComponent(id)}&pickup=${scope}`), renderSessionComparison);
+    loadPair("session", JSON.stringify([matched, mapsKey.map(([id]) => id), sessionKey, valuation, scope]),
+      ({ id, maps }) => matched ? request("/api/session-drops", { mapIds: maps.map(map => map.id), pickup: scope }) :
+        request(`/api/session?session=${encodeURIComponent(id)}&pickup=${scope}`), renderSessionComparison);
     loadPair("averages", JSON.stringify([mapsKey, state.averageItems, state.averageOrder]), ({ maps }) => maps.length
       ? request("/api/drop-averages", { mapIds: maps.map(map => map.id), itemNames: state.averageItems }) : null, renderAverageComparison);
     loadPair("uniques", JSON.stringify(mapsKey), ({ maps }) => maps.length
@@ -385,36 +424,13 @@
 
   function renderMapAverages() {
     const list = element("ul", null, "compare-share-list");
-    for (const [name, badge, key, format] of [["Map time", "MT", "averageTime", formatTime],
-      ["Item quantity", "IIQ", "averageQuantity", formatPercent], ["Item rarity", "IIR", "averageRarity", formatPercent],
-      ["Pack size", "PS", "averagePackSize", formatPercent]]) {
-      const [a, b] = summaries.map(summary => summary[key]);
-      const [weightA, weightB] = summaries.map(summary => key === "averageTime" ? summary.timedMaps : summary.maps.length);
-      const total = weightA + weightB;
-      const average = total ? ((a ?? 0) * weightA + (b ?? 0) * weightB) / total : null;
-      list.append(shareCard({ name, badge }, a, b, average, format, "Combined average per map", "Avg"));
-    }
-
-    const bonuses = new Map();
-    const coverage = summaries.map(({ maps }, side) => {
-      const recorded = maps.filter(map => Array.isArray(map.dropBonuses));
-      for (const map of recorded) {
-        for (const { label, source, percent } of map.dropBonuses) {
-          const name = source ? `${label} · ${source}` : label;
-          const bonus = bonuses.get(name) ?? { name, label, sums: [0, 0], badge: dropBonusBadges.get(label) ?? "%" };
-          bonus.sums[side] += percent;
-          bonuses.set(name, bonus);
-        }
-      }
-      return recorded.length;
-    });
-    const ranks = new Map([...dropBonusBadges.keys()].map((label, index) => [label, index]));
-    const ordered = [...bonuses.values()].sort((a, b) =>
-      (ranks.get(a.label) ?? ranks.size) - (ranks.get(b.label) ?? ranks.size) || a.name.localeCompare(b.name));
-    for (const bonus of ordered) {
-      const [a, b] = bonus.sums.map((sum, side) => coverage[side] ? sum / coverage[side] : null);
-      const average = (bonus.sums[0] + bonus.sums[1]) / (coverage[0] + coverage[1]);
-      list.append(shareCard(bonus, a, b, average, formatPercent, "Combined average per map with modifier data", "Avg"));
+    for (const { name, badge, label, format, samples } of mapAverageMetrics(...summaries.map(summary => summary.maps))) {
+      const [a, b] = samples.map(averageValue);
+      const average = averageValue({
+        sum: samples[0].sum + samples[1].sum, count: samples[0].count + samples[1].count
+      });
+      const description = label ? "Combined average per map with modifier data" : "Combined average per map";
+      list.append(shareCard({ name, badge }, a, b, average, format, description, "Avg"));
     }
     $("compare-map-averages").replaceChildren(list);
   }
@@ -521,25 +537,29 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
 
-  function showComparison(show) {
-    view.hidden = !show;
-    $("history-view").hidden = show;
-    $("show-history").setAttribute("aria-pressed", String(!show));
-    $("show-comparison").setAttribute("aria-pressed", String(show));
-    if (show && !opened) {
+  function openComparison() {
+    if (view.hidden) return;
+    if (!opened) {
       $("compare-profit").value = state.profitMode;
       $("compare-pickup").value = state.pickupScope;
       opened = true;
     }
-    if (show) refreshComparison();
+    refreshComparison();
   }
 
-  $("show-history").addEventListener("click", () => showComparison(false));
-  $("show-comparison").addEventListener("click", () => showComparison(true));
-  document.addEventListener("map-history-updated", refreshComparison);
-  for (const id of ["compare-a", "compare-b", "compare-profit", "compare-pickup"]) $(id).addEventListener("change", () => {
+  document.addEventListener("dashboard-view-changed", openComparison);
+  document.addEventListener("map-history-updated", () => refreshComparison());
+  for (const id of ["compare-a", "compare-b", "compare-profit", "compare-pickup", "compare-sample-mode"]) $(id).addEventListener("change", () => {
     chartIndex = null;
     refreshComparison();
+  });
+  uniquePrices.addEventListener("change", () => {
+    uniquePricesOverride = uniquePrices.checked;
+    refreshComparison();
+  });
+  resampleButton.addEventListener("click", () => {
+    chartIndex = null;
+    refreshComparison(true);
   });
   $("compare-swap").addEventListener("click", () => {
     [selected[0].value, selected[1].value] = [selected[1].value, selected[0].value];

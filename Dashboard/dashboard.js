@@ -16,7 +16,7 @@ const averageOrderKey = "map-drop-statistics.average-order";
 const defaultAverageItems = ["Divine Orb", "Valdo's Puzzle Box"];
 const profitModeKey = "map-drop-statistics.profit-mode";
 const state = { maps: [], filtered: [], statisticsMaps: [], selected: null, detail: null, tab: "loot", modMode: "basic", metric: "profit", visible: 25,
-  editing: null, session: null, sessions: null, sessionView: "active", sessionExpanded: false, sessionAmount: "count",
+  editing: null, session: null, sessions: null, sessionView: "active", sessionTab: "overview", sessionExpanded: false, sessionAmount: "count",
   ignored: new Set(), lootSort: null, pickupScope: "all", averageItems: loadAverageItems(), averageOrder: loadAverageOrder(),
   profitMode: loadProfitMode(), threadCostsByMap: new WeakMap(), costMapId: null, widget: null };
 const sessionPreviewSize = 9;
@@ -38,7 +38,13 @@ let latestAverageRequest = 0;
 let averageDrag = null;
 let averageDropTarget = null;
 let pendingAverageRender = null;
-let uniqueSelection = null;
+const mapUniqueView = { body: "details-body", prefix: "unique", render: renderUniques };
+const sessionUniqueView = { body: "session-unique-content", prefix: "session-unique", render: renderSessionUniques };
+let sessionAverageSelection = null;
+const groundLootPageSize = 75;
+let groundLootSelection = null;
+let groundLootVisible = groundLootPageSize;
+let groundLootSort = { key: "count", direction: "descending" };
 
 function element(tag, label, className) {
   const node = document.createElement(tag);
@@ -57,14 +63,21 @@ const divines = value => value == null ? "—" : `${formatDivineNumber(value)} d
 const duration = seconds => seconds == null ? "—" : seconds >= 3600
   ? `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
   : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-const pickupValue = (map, scope = state.pickupScope) => scope === "personal" ? map.personalPickupDivine :
-  scope === "party" ? map.partyPickupDivine : map.profitDivine;
+const pickupValue = (map, scope = state.pickupScope, includeUniquePrices) => {
+  if (includeUniquePrices === undefined || !map.pickupValuation) {
+    return scope === "personal" ? map.personalPickupDivine : scope === "party" ? map.partyPickupDivine : map.profitDivine;
+  }
+  const values = map.pickupValuation;
+  const personal = values.personalWithoutUniques + (includeUniquePrices ? values.personalUniques : 0);
+  const party = values.partyWithoutUniques + (includeUniquePrices ? values.partyUniques : 0);
+  return scope === "personal" ? personal : scope === "party" ? party : personal + party;
+};
 const defaultMapPrice = () => state.sessions?.mapCosts?.mapPriceDivine ?? 1;
 const recordedDefaultMapPrice = map => map.pricing?.defaultMapDivine ?? 1;
 const mapPrice = map => map.mapPriceDivine ?? recordedDefaultMapPrice(map);
-const mapProfit = (map, mode = state.profitMode, scope = state.pickupScope) => {
+const mapProfit = (map, mode = state.profitMode, scope = state.pickupScope, includeUniquePrices) => {
   const cost = mode === "net" ? mapExpense(map) : 0;
-  const value = pickupValue(map, scope);
+  const value = pickupValue(map, scope, includeUniquePrices);
   return cost == null || value == null ? null : value - cost;
 };
 const unpricedPickups = map => state.pickupScope === "personal" ? map.unpricedPersonal :
@@ -75,6 +88,9 @@ const hourly = map => {
 };
 const hasTracking = map => map.state !== "legacy";
 const includedInStatistics = map => !map.excludedFromStatistics;
+const isFinishedMap = map => !["active", "paused"].includes(map.state);
+const formatAveragePercent = value => value == null ? "—" : `${formatDivineNumber(value)}%`;
+const formatAverageTime = value => value == null ? "—" : `${value < 0 ? "−" : ""}${duration(Math.round(Math.abs(value)))}`;
 const statusLabel = map => map.failed ? "Failed" : stateLabels[map.state] ?? "Recorded";
 const dateLabel = value => value && new Date(value).getFullYear() > 1 ? date.format(new Date(value)) : "Unknown date";
 const set = (id, value) => { if ($(id).textContent !== value) $(id).textContent = value; };
@@ -184,7 +200,7 @@ async function refresh(force = false) {
     if (changed || force) {
       updateLeagueFilter();
       renderOverview();
-    } else if (!dropAverageKey) {
+    } else if (state.sessionTab === "overview" && !dropAverageKey) {
       refreshDropAverages();
     }
     if (force || JSON.stringify(session) !== JSON.stringify(state.session) || !session) {
@@ -231,7 +247,8 @@ function renderSessionControls() {
   $("resume-session").hidden = !archive.some(session => session.id === state.sessionView);
   $("unique-prices").checked = state.sessions.includeUniquePrices;
   const threshold = state.sessions.failUniqueThreshold;
-  set("fail-note", Number.isInteger(threshold) ? `Threshold · ≤ ${number.format(threshold)} uniques` : "Selected period");
+  set("fail-note", Number.isInteger(threshold) ? `≤ ${number.format(threshold)} uniques` : "Selected period");
+  $("fail-note").title = Number.isInteger(threshold) ? "Unique drop threshold for Atlas maps" : "";
 }
 
 function renderWidgetStatus() {
@@ -475,6 +492,87 @@ function dropAverageMetrics(result) {
   return metrics.sort(([a], [b]) => (ranks.get(a) ?? ranks.size) - (ranks.get(b) ?? ranks.size));
 }
 
+function mapTimeSamples(maps) {
+  const timed = maps.filter(map => map.seconds > 0);
+  return { sum: timed.reduce((total, map) => total + map.seconds, 0), count: timed.length };
+}
+
+function mapAverageMetrics(...groups) {
+  const metrics = [{ name: "Map time", badge: "MT", format: formatAverageTime, samples: groups.map(mapTimeSamples) }];
+  for (const [field, name, badge] of [["quantity", "Item quantity", "IIQ"], ["rarity", "Item rarity", "IIR"], ["packSize", "Pack size", "PS"]]) {
+    metrics.push({ name, badge, format: formatAveragePercent, samples: groups.map(maps => ({
+      sum: maps.reduce((total, map) => total + map[field], 0), count: maps.length
+    })) });
+  }
+
+  const badges = new Map([["More Currency", "CUR"], ["More Maps", "MAP"], ["More Threads", "THR"],
+    ["More Divination Cards", "DIV"], ["More Item Rarity", "IIR"], ["Increased Atlas Drops", "ATL"], ["Increased Maps", "MAP"]]);
+  const bonuses = new Map();
+  const recorded = groups.map(maps => maps.filter(map => Array.isArray(map.dropBonuses)));
+  for (const [side, maps] of recorded.entries()) {
+    for (const map of maps) {
+      for (const { label, source, percent } of map.dropBonuses) {
+        const name = source ? `${label} · ${source}` : label;
+        const bonus = bonuses.get(name) ?? { name, label, badge: badges.get(label) ?? "%", format: formatAveragePercent,
+          samples: recorded.map(records => ({ sum: 0, count: records.length })) };
+        bonus.samples[side].sum += percent;
+        bonuses.set(name, bonus);
+      }
+    }
+  }
+  const ranks = new Map([...badges.keys()].map((label, index) => [label, index]));
+  const ordered = [...bonuses.values()].sort((a, b) =>
+    (ranks.get(a.label) ?? ranks.size) - (ranks.get(b.label) ?? ranks.size) || a.name.localeCompare(b.name));
+  return metrics.concat(ordered);
+}
+
+const averageValue = ({ sum, count }) => count ? sum / count : null;
+
+function averageStat(name, value, icon, badge) {
+  const row = element("div", null, "mod-bonus");
+  const label = element("dt");
+  label.append(itemIcon({ name, icon }, badge), element("span", name));
+  row.append(label, element("dd", value));
+  return row;
+}
+
+function renderSessionMapAverages(maps) {
+  const finished = maps.filter(map => isFinishedMap(map) && hasTracking(map));
+  const conditions = mapAverageMetrics(finished).map(({ name, badge, format, samples: [sample] }) =>
+    averageStat(name, format(averageValue(sample)), null, badge));
+  $("session-map-average-items").replaceChildren(...conditions);
+  set("session-averages-note", finished.length ? `${number.format(finished.length)} ${finished.length === 1 ? "map" : "maps"}` : "No recorded maps.");
+
+  const names = state.averageItems;
+  const key = JSON.stringify([names, state.averageOrder, finished.map(map => [map.id, map.updatedUtc])]);
+  if (sessionAverageSelection?.key === key) return;
+  const selection = { key };
+  sessionAverageSelection = selection;
+  const parent = $("session-drop-average-items");
+  const status = $("session-drop-averages-status");
+  parent.replaceChildren();
+  status.hidden = !finished.length;
+  if (!finished.length) return;
+  status.textContent = "Calculating…";
+  request("/api/drop-averages", { itemNames: names, mapIds: finished.map(map => map.id) }).then(result => {
+    if (sessionAverageSelection !== selection) return;
+    status.hidden = true;
+    const rows = dropAverageMetrics(result).filter(([key, , , count]) => key !== "stat:kills" || count > 0);
+    parent.replaceChildren(...rows.map(([key, name, sum, count, custom]) => {
+      const icon = result.icons?.[custom ? `item:${name}` : key];
+      const value = count ? formatDivineNumber(sum / count) : "—";
+      return averageStat(name, value, icon, key === "stat:kills" ? "⚔︎" : undefined);
+    }));
+  }, () => {
+    if (sessionAverageSelection !== selection) return;
+    sessionAverageSelection = null;
+    const retry = element("button", "Retry", "button");
+    retry.type = "button";
+    retry.addEventListener("click", () => renderSessionMapAverages(mapsInSession().filter(includedInStatistics)));
+    status.replaceChildren("Could not load drop averages. ", retry);
+  });
+}
+
 function renderDropAverages(result, note) {
   if (averageDrag) {
     pendingAverageRender = { result, note };
@@ -575,16 +673,23 @@ function updateLeagueFilter() {
   if (leagues.includes(selected)) select.value = selected;
 }
 
+function selectedSessionScope() {
+  return state.sessionView === "active" ? state.sessions?.activeId : state.sessionView;
+}
+
+function mapsInSession(scope = selectedSessionScope()) {
+  return state.maps.filter(map => scope === "favorites" ? map.favorite : !scope || scope === "all" || map.sessionId === scope);
+}
+
 function renderOverview() {
   const search = itemKey($("search").value.trim());
   const league = $("league").value;
   const status = $("status").value;
   const encounter = $("map-encounter").value;
   const limit = Number($("limit").value);
-  const scope = state.sessionView === "active" ? state.sessions?.activeId : state.sessionView;
-  const matches = state.maps.filter(map => {
-    const inScope = scope === "favorites" ? map.favorite : !scope || scope === "all" || map.sessionId === scope;
-    if (!inScope) return false;
+  const scope = selectedSessionScope();
+  const sessionMaps = mapsInSession(scope);
+  const matches = sessionMaps.filter(map => {
     if (league && map.league !== league) return false;
     if (search && !itemKey(map.name).includes(search)) return false;
     if (encounter && !map.zones?.includes(encounter)) return false;
@@ -606,7 +711,10 @@ function renderOverview() {
     renderDetail();
   }
 
-  const tracked = state.statisticsMaps.filter(hasTracking);
+  const showingOverview = state.sessionTab === "overview";
+  const overviewMaps = showingOverview ? state.statisticsMaps :
+    sessionMaps.filter(map => includedInStatistics(map) && isFinishedMap(map));
+  const tracked = overviewMaps.filter(hasTracking);
   const net = state.profitMode === "net";
   const costs = tracked.map(mapExpense);
   const missingCosts = costs.filter(cost => cost == null).length;
@@ -620,7 +728,7 @@ function renderOverview() {
   const unpriced = valued.reduce((sum, map) => sum + unpricedPickups(map), 0);
   const left = tracked.reduce((sum, map) => sum + map.leftDivine, 0);
   const leftUnpriced = tracked.reduce((sum, map) => sum + map.leftUnpricedQuantity, 0);
-  const withKills = state.statisticsMaps.filter(map => map.monsterKills != null);
+  const withKills = overviewMaps.filter(map => map.monsterKills != null);
   $("kill-metric").hidden = !withKills.length;
   $("sort-history-kills").hidden = !withKills.length;
   if (!withKills.length && $("map-sort").value === "kills") $("map-sort").value = "recent";
@@ -641,18 +749,29 @@ function renderOverview() {
   setMetricDivines("average", valued.length ? total / valued.length : null);
   setMetricDivines("left-total", tracked.length ? left : null);
   set("left-note", leftUnpriced ? `Unpriced · ${number.format(leftUnpriced)} items` : "Priced drops");
-  set("fails", state.statisticsMaps.length ? number.format(state.statisticsMaps.filter(map => map.failed).length) : "—");
+  set("fails", overviewMaps.length ? number.format(overviewMaps.filter(map => map.failed).length) : "—");
   set("kills-total", withKills.length ? number.format(withKills.reduce((sum, map) => sum + map.monsterKills, 0)) : "—");
   $("kills-note").replaceChildren(withKills.length ? createKillBreakdown(killTotals) : "No maps with kill tracking");
   $("kills-note").title = withKills.length ? `Maps with kill tracking · ${number.format(withKills.length)}` : "";
   set("total-note", unpriced ? `Unpriced · ${number.format(unpriced)} items` : net ? "After map costs" : "Priced pickups");
   set("time-note", seconds ? duration(seconds) + " in maps" : "Time spent in maps");
+  const time = mapTimeSamples(tracked.filter(map => map.state !== "active"));
+  set("avg-map-time", duration(averageValue(time)));
+  set("avg-map-time-note", time.count ? `${number.format(time.count)} timed ${time.count === 1 ? "map" : "maps"}` : "");
   set("map-note", `${number.format(valued.length)} ${valued.length === 1 ? "map" : "maps"}`);
   set("maps-title", scope === "favorites" ? "Favorite maps" : "Maps");
   set("map-count", number.format(state.filtered.length));
-  refreshDropAverages();
-  renderMapList();
-  drawChart();
+  if (showingOverview) {
+    refreshDropAverages();
+    renderMapList();
+    drawChart();
+  } else if (state.sessionTab === "uniques") {
+    renderSessionUniques();
+  } else if (state.sessionTab === "ground") {
+    refreshGroundLoot();
+  } else {
+    renderSessionMapAverages(sessionMaps.filter(includedInStatistics));
+  }
 }
 
 function renderMapList() {
@@ -715,7 +834,7 @@ function createKillBreakdown(kills) {
   const breakdown = element("span", null, "kill-breakdown");
   breakdown.append("(");
   for (const [index, [label, key]] of killRarities.entries()) {
-    if (index) breakdown.append(" / ");
+    if (index) breakdown.append(" / ");
     const formatted = number.format(kills[key]);
     const count = element("span", formatted, `kill-${key}`);
     count.title = `${label} ${formatted}`;
@@ -723,6 +842,9 @@ function createKillBreakdown(kills) {
     breakdown.append(count);
   }
   breakdown.append(")");
+  const text = breakdown.textContent;
+  const digits = (text.match(/\d/g) ?? []).length;
+  breakdown.style.setProperty("--kill-width", 0.59 * digits + 0.33 * (text.length - digits));
   return breakdown;
 }
 
@@ -1008,12 +1130,12 @@ function renderMapCosts(parent, map) {
   parent.append(edit);
 }
 
-function uniqueDropsFor(maps, includeExcluded) {
+function uniqueDropsFor(view, maps, includeExcluded) {
   const key = JSON.stringify([includeExcluded, maps.map(map => [map.id, map.updatedUtc])]);
-  if (uniqueSelection?.key === key) return uniqueSelection;
+  if (view.selection?.key === key) return view.selection;
 
   const selection = { key, result: null, failed: false };
-  uniqueSelection = selection;
+  view.selection = selection;
   if (!maps.length) {
     selection.result = { maps: 0, dropped: 0, items: [] };
     return selection;
@@ -1021,10 +1143,10 @@ function uniqueDropsFor(maps, includeExcluded) {
 
   request("/api/unique-drops", { mapIds: maps.map(map => map.id), includeExcluded }).then(result => {
     selection.result = result;
-    if (uniqueSelection === selection) renderUniques();
+    if (view.selection === selection) view.render();
   }, () => {
     selection.failed = true;
-    if (uniqueSelection === selection) renderUniques();
+    if (view.selection === selection) view.render();
   });
   return selection;
 }
@@ -1060,26 +1182,142 @@ function renderUniqueTierTotals(result) {
 
 function renderUniques() {
   if (state.tab !== "uniques" || !state.detail) return;
-  const parent = $("details-body");
   const period = $("unique-scope").value === "period";
-  const maps = period ? state.statisticsMaps.filter(map => !["active", "paused"].includes(map.state)) :
+  const maps = period ? state.statisticsMaps.filter(isFinishedMap) :
     state.maps.filter(map => map.id === state.detail.id);
-  const { result, failed } = uniqueDropsFor(maps, !period);
+  renderUniqueTable(mapUniqueView, maps, !period);
+}
+
+function renderSessionUniques() {
+  if (state.sessionTab !== "uniques") return;
+  const scope = selectedSessionScope();
+  set("session-uniques-title", scope === "all" ? "Unique history" : scope === "favorites" ? "Favorite uniques" : "Session uniques");
+  const maps = mapsInSession(scope).filter(map => includedInStatistics(map) && isFinishedMap(map));
+  renderUniqueTable(sessionUniqueView, maps, false);
+}
+
+function refreshGroundLoot() {
+  const scope = selectedSessionScope();
+  if (!scope) return;
+  const maps = mapsInSession(scope).filter(map => includedInStatistics(map) && isFinishedMap(map) && hasTracking(map));
+  const key = JSON.stringify([scope, state.sessions?.includeUniquePrices, state.sessions?.ignoredItems,
+    maps.map(map => [map.id, map.updatedUtc])]);
+  if (groundLootSelection?.key === key) return;
+
+  const selection = { key, result: null, failed: false };
+  groundLootSelection = selection;
+  groundLootVisible = groundLootPageSize;
+  renderGroundLoot();
+  request(`/api/session?session=${encodeURIComponent(scope)}&pickup=left`).then(result => {
+    selection.result = result;
+    if (groundLootSelection === selection) renderGroundLoot();
+  }, () => {
+    selection.failed = true;
+    if (groundLootSelection === selection) renderGroundLoot();
+  });
+}
+
+function renderGroundLoot(scrollTop = 0) {
+  const parent = $("session-ground-content");
+  const summary = $("session-ground-summary");
+  const more = $("session-ground-more");
+  const { result, failed } = groundLootSelection ?? {};
+  parent.replaceChildren();
+  summary.replaceChildren();
+  more.hidden = true;
+  if (!result) {
+    set("session-ground-status", failed ? "Could not load ground loot." : "Loading loot…");
+    if (failed) {
+      const retry = element("button", "Retry", "button");
+      retry.type = "button";
+      retry.addEventListener("click", () => { groundLootSelection = null; refreshGroundLoot(); });
+      parent.append(retry);
+    }
+    return;
+  }
+
+  let total = 0, currency = 0, uniques = 0, knownValue = 0, pricedCount = 0;
+  for (const item of result.items) {
+    total += item.count;
+    if (isCurrency(item)) currency += item.count;
+    if (isUnique(item)) uniques += item.count;
+    knownValue += item.valueDivine ?? 0;
+    pricedCount += item.pricedCount;
+  }
+  for (const [label, value] of [["Items left", number.format(total)], ["Currency", number.format(currency)],
+    ["Uniques", number.format(uniques)], ["Known value", divines(pricedCount ? knownValue : null)],
+    ["Unpriced", number.format(total - pricedCount)]]) {
+    const stat = element("div", null, "mod-bonus");
+    stat.append(element("dt", label), element("dd", value));
+    summary.append(stat);
+  }
+
+  const query = itemKey($("session-ground-search").value.trim());
+  const category = $("session-ground-category").value;
+  const items = result.items.filter(item => itemKey(item.name).includes(query) &&
+    (!category || (category === "other" ? !isCurrency(item) && !isUnique(item) : item.category === category)));
+  const mapCount = `${number.format(result.maps)} finished ${result.maps === 1 ? "run" : "runs"}`;
+  set("session-ground-status", !result.maps ? "No finished runs with pickup tracking." :
+    !result.items.length ? `${mapCount} · No loot left on the ground.` :
+    !items.length ? `${mapCount} · No items match these filters.` :
+    `${mapCount} · ${number.format(items.length)} ${items.length === 1 ? "item type" : "item types"}`);
+  if (!items.length) return;
+
+  const { key, direction } = groundLootSort;
+  items.sort((a, b) => compareLootValues(a[key], b[key], direction) || b.count - a.count || a.name.localeCompare(b.name));
+  const table = element("table", null, "ground-table");
+  const headings = table.createTHead().insertRow();
+  for (const [label, field, numeric] of [["Item", "name"], ["Category", "category"], ["Left", "count", true], ["Value (div)", "valueDivine", true]]) {
+    headings.append(sortableHeading(label, field, key === field ? direction : null, numeric ? "descending" : "ascending", numeric, next => {
+      groundLootSort = { key: field, direction: next };
+      groundLootVisible = groundLootPageSize;
+      renderGroundLoot();
+      parent.querySelector(`[data-sort-key="${field}"]`)?.focus({ preventScroll: true });
+    }));
+  }
+  const body = table.createTBody();
+  for (const item of items.slice(0, groundLootVisible)) {
+    const row = body.insertRow();
+    const name = element("div", null, "table-item");
+    name.append(itemIcon(item), element("span", item.name, "item-name"));
+    row.insertCell().append(name);
+    row.insertCell().textContent = item.category;
+    const count = row.insertCell();
+    count.className = "numeric";
+    count.textContent = number.format(item.count);
+    const value = row.insertCell();
+    value.className = "numeric";
+    value.textContent = divines(item.valueDivine);
+    if (item.pricedCount < item.count) value.title = `Priced ${number.format(item.pricedCount)} of ${number.format(item.count)} items`;
+  }
+  const scroll = element("div", null, "ground-table-scroll");
+  scroll.tabIndex = 0;
+  scroll.setAttribute("aria-label", "Loot left on the ground");
+  scroll.append(table);
+  parent.append(scroll);
+  scroll.scrollTop = scrollTop;
+  more.hidden = items.length <= groundLootVisible;
+  if (!more.hidden) set("session-ground-more", `Show more (${number.format(items.length - groundLootVisible)} remaining)`);
+}
+
+function renderUniqueTable(view, maps, singleMap) {
+  const parent = $(view.body);
+  const { result, failed } = uniqueDropsFor(view, maps, singleMap);
   parent.replaceChildren();
   if (!result) {
     parent.append(element("p", failed ? "Could not load unique items." : "Loading unique items…", "empty"));
     if (failed) {
       const retry = element("button", "Retry", "button");
       retry.type = "button";
-      retry.addEventListener("click", () => { uniqueSelection = null; renderUniques(); });
+      retry.addEventListener("click", () => { view.selection = null; view.render(); });
       parent.append(retry);
     }
     return;
   }
 
-  const typeSelect = $("unique-type");
+  const typeSelect = $(`${view.prefix}-type`);
   const type = typeSelect.value;
-  const tier = $("unique-tier").value;
+  const tier = $(`${view.prefix}-tier`).value;
   const showDrops = state.pickupScope === "all";
   const items = result.items.map(item => ({ ...item, type: item.type ?? "Unknown",
     count: showDrops ? item.dropped : pickupQuantity(item) })).filter(item => item.count > 0);
@@ -1094,7 +1332,7 @@ function renderUniques() {
   const total = showDrops && !type && !tier ? Math.max(result.dropped, count) : count;
   const amountLabel = showDrops ? "Dropped" : "Picked up";
   const totals = [[amountLabel, number.format(total)], ["Item names", number.format(new Set(shown.map(item => item.name)).size)]];
-  if (period)
+  if (!singleMap)
     totals.push(["Maps", number.format(result.maps)], ["Average per map", result.maps ? priceNumber.format(total / result.maps) : "—"]);
 
   const header = element("div", null, "unique-summary");
@@ -1118,7 +1356,7 @@ function renderUniques() {
     return;
   }
 
-  const sortSelect = $("unique-sort");
+  const sortSelect = $(`${view.prefix}-sort`);
   const [sortKey, sortDirection] = uniqueSortOrders[sortSelect.value];
   shown.sort((a, b) => compareLootValues(a[sortKey], b[sortKey], sortDirection) || b.count - a.count || a.name.localeCompare(b.name));
 
@@ -1128,7 +1366,7 @@ function renderUniques() {
     [amountLabel, "count", true], ["Unit price", "unitDivine", true]]) {
     const th = sortableHeading(label, key, sortKey === key ? sortDirection : null, numeric ? "descending" : "ascending", numeric, next => {
       sortSelect.value = Object.keys(uniqueSortOrders).find(order => uniqueSortOrders[order][0] === key && uniqueSortOrders[order][1] === next);
-      renderUniques();
+      view.render();
       parent.querySelector(`[data-sort-key="${key}"]`)?.focus({ preventScroll: true });
     });
     if (key === "unitDivine") th.title = "Recorded prices in Divine Orbs per item, weighted by the number of priced copies in the selection.";
@@ -1424,6 +1662,7 @@ function openEdit(run, item) {
 }
 
 function drawChart(progress = 1) {
+  if (state.sessionTab !== "overview") return;
   const maps = state.statisticsMaps.filter(hasTracking).map(map => ({
     map, value: state.metric === "hour" ? hourly(map) : mapProfit(map)
   })).filter(point => point.value != null).reverse();
@@ -1562,6 +1801,66 @@ $("open-cost-settings").addEventListener("click", () => {
   $("cost-settings-dialog").showModal();
   refreshPricingStatus();
 });
+function bindNameListEditor(key, fieldId, skipCommentLines = false) {
+  const opener = $(`open-${key}`);
+  const dialog = $(`${key}-dialog`);
+  const field = $(fieldId);
+  const save = $(`save-${key}`);
+  const reset = $(`reset-${key}`);
+  const status = `${key}-status`;
+  const endpoint = `/api/settings/${key}`;
+  let defaults = [];
+
+  const disableEditor = disabled => {
+    field.disabled = save.disabled = disabled;
+    if (reset) reset.disabled = disabled;
+  };
+  opener.addEventListener("click", async () => {
+    opener.disabled = true;
+    disableEditor(true);
+    field.value = "";
+    set(status, "Loading…");
+    dialog.showModal();
+    try {
+      const settings = await request(endpoint);
+      defaults = settings.defaults ?? [];
+      field.value = settings.names.join("\n");
+      disableEditor(false);
+      set(status, "");
+      if (dialog.open) field.focus();
+    } catch {
+      set(status, "Could not load the list.");
+    } finally {
+      opener.disabled = false;
+    }
+  });
+  reset?.addEventListener("click", () => {
+    field.value = defaults.join("\n");
+    field.focus();
+  });
+  $(`${key}-form`).addEventListener("submit", async event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const names = field.value.split("\n").map(name => name.trim())
+      .filter(name => name && !(skipCommentLines && name.startsWith("#")));
+    opener.disabled = true;
+    disableEditor(true);
+    set(status, "");
+    try {
+      await request(endpoint, names);
+      dialog.close();
+    } catch (error) {
+      set(status, error.message === "400" ?
+        "Use one name per line, up to 240 characters each." : "Could not save the list.");
+    } finally {
+      opener.disabled = false;
+      disableEditor(false);
+    }
+  });
+}
+
+bindNameListEditor("t0-uniques", "t0-unique-names", true);
+bindNameListEditor("additional-areas", "additional-area-names");
 $("open-widget-settings").addEventListener("click", openWidgetSettings);
 $("widget-settings-form").addEventListener("input", renderWidgetPreview);
 $("widget-settings-form").addEventListener("submit", async event => {
@@ -1737,6 +2036,32 @@ $("session-view").addEventListener("change", event => {
   refresh(true);
 });
 
+for (const [id, event] of [["session-ground-search", "input"], ["session-ground-category", "change"]]) {
+  $(id).addEventListener(event, () => {
+    groundLootVisible = groundLootPageSize;
+    renderGroundLoot();
+  });
+}
+$("session-ground-more").addEventListener("click", () => {
+  groundLootVisible += groundLootPageSize;
+  renderGroundLoot($("session-ground-content").firstElementChild?.scrollTop);
+});
+
+for (const button of $("session-tabs").querySelectorAll("[data-session-tab]")) {
+  button.addEventListener("click", () => {
+    const next = button.dataset.sessionTab;
+    if (state.sessionTab === next) return;
+    state.sessionTab = next;
+    for (const tab of $("session-tabs").querySelectorAll("[data-session-tab]")) {
+      tab.setAttribute("aria-pressed", String(tab === button));
+      $(tab.getAttribute("aria-controls")).hidden = tab !== button;
+    }
+    $("history-map-filters").hidden = next !== "overview";
+    renderOverview();
+    if (next === "overview" && state.selected && !state.detail) loadDetail(state.selected);
+  });
+}
+
 async function changeSessionSetting(action, errorMessage) {
   const controls = ["new-session", "open-rename-session", "open-delete-session", "resume-session", "session-view", "unique-prices"].map($);
   for (const control of controls) control.disabled = true;
@@ -1837,6 +2162,13 @@ $("ignore-from-edit").addEventListener("click", async event => {
 $("loot-search").addEventListener("input", renderDetail);
 for (const id of ["unique-scope", "unique-type", "unique-tier", "unique-sort"])
   $(id).addEventListener("change", renderUniques);
+for (const field of ["type", "tier", "sort"]) {
+  const label = $(`unique-${field}`).closest("label").cloneNode(true);
+  const select = label.querySelector("select");
+  select.id = `session-unique-${field}`;
+  select.addEventListener("change", renderSessionUniques);
+  $("session-unique-tools").append(label);
+}
 $("reset-loot-sort").addEventListener("click", () => {
   state.lootSort = null;
   renderDetail();
@@ -1926,6 +2258,19 @@ $("chart").addEventListener("click", () => {
   if (point) selectMap(point.map.id);
 });
 new ResizeObserver(() => drawChart()).observe($("plot"));
+function bindViewSwitch(controls, onChange = () => {}) {
+  const buttons = controls.querySelectorAll("button[aria-controls]");
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      for (const tab of buttons) {
+        tab.setAttribute("aria-pressed", String(tab === button));
+        $(tab.getAttribute("aria-controls")).hidden = tab !== button;
+      }
+      onChange();
+    });
+  }
+}
+bindViewSwitch(document.querySelector(".dashboard-views"), () => document.dispatchEvent(new Event("dashboard-view-changed")));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden) refresh(); }, 4000);
 refresh(true).then(animateChart);

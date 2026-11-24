@@ -71,7 +71,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
     private readonly TrackedDropWindowStats _trackedDropWindowStats = new();
     private readonly List<AreaReview> _appliedAreaReviews = [];
     private readonly List<string> _savedMapStatFiles = [];
-    private HashSet<string> _t0UniqueNames = new(StringComparer.InvariantCultureIgnoreCase);
+    private string[] _initialT0UniqueNames = MapHistory.DefaultT0UniqueNames;
     private Dictionary<string, List<string>> _uniqueArtMapping = new(StringComparer.InvariantCultureIgnoreCase);
 
     private string _currentAreaName = "No area";
@@ -112,7 +112,7 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             }
             EnsureCustomTrackedItemDefaults();
             EnsureTrackedDropWindowDefaults();
-            _t0UniqueNames = LoadT0UniqueNames();
+            _initialT0UniqueNames = LoadInitialT0UniqueNames();
             _uniqueArtMapping = LoadUniqueArtMapping();
             RefreshSavedMapStats();
             InitialiseDashboard();
@@ -310,8 +310,8 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         var liveAreaChangeCount = GameController?.Game?.AreaChangeCount ?? _lastAreaChangeCount;
         var isMap = IsTrackableArea(liveArea);
         if (!_areaChangePending && liveAreaChangeCount == _lastAreaChangeCount &&
-            (isMap ? _trackingCurrentArea && IsSameMapInstance(liveArea, allowUnknown: true)
-                   : !_trackingCurrentArea && _isInNonMapArea))
+            (_trackingCurrentArea ? (isMap || _activeRun?.AdditionalArea == true) && IsSameMapInstance(liveArea, allowUnknown: true)
+                                  : !isMap && _isInNonMapArea))
             return true;
 
         // The controller can announce a transition before its in-game data has switched over.
@@ -806,8 +806,12 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         _sessionStats.CurrentNonMapElapsed = DateTime.UtcNow - _nonMapAreaStartedUtc;
     }
 
-    private static bool IsTrackableArea(AreaInstance area) =>
-        area is { IsTown: false, IsHideout: false, IsPeaceful: false } && MapAreaRules.IsAtlasMap(area.Area?.Id);
+    private static bool IsAtlasArea(AreaInstance area) =>
+        area is { IsPeaceful: false } && MapAreaRules.IsAtlasMap(area.Area?.Id);
+
+    private bool IsTrackableArea(AreaInstance area) =>
+        area is { IsTown: false, IsHideout: false, Area.Id: not null } &&
+        (IsAtlasArea(area) || _history?.IsAdditionalArea(area.Name) == true);
 
     private static string GetAreaKey(AreaInstance area)
     {
@@ -842,15 +846,17 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
             LogError($"SaveAreaStatsToDisk failed: {ex}");
         }
 
-        if (!IsSaveLockedArea(_currentAreaName))
+        var isAdditionalArea = _activeRun?.AdditionalArea == true;
+        var includeInSession = isAdditionalArea || !IsSaveLockedArea(_currentAreaName);
+        if (includeInSession)
             _trackedDropWindowStats.AddMap();
 
         var isFailMap = MapFailureRules.IsFailed("recorded", _activeRun?.FailureOverride, _activeRun?.WipeObserved == true,
-            _currentAreaStats.UniqueItems, Settings.Tracking.FailUniqueThreshold.Value);
-        if (isFailMap && !IsSaveLockedArea(_currentAreaName))
+            _currentAreaStats.UniqueItems, Settings.Tracking.FailUniqueThreshold.Value, applyUniqueThreshold: !isAdditionalArea);
+        if (isFailMap && includeInSession)
             _sessionStats.AddFail();
 
-        var shouldCountInAverage = !IsSaveLockedArea(_currentAreaName) &&
+        var shouldCountInAverage = includeInSession &&
                                    (!isFailMap || Settings.Tracking.CountFailMapToStatistic) &&
                                    (_currentAreaStats.HasDrops || Settings.Tracking.IncludeEmptyAreasInAverage);
         if (shouldCountInAverage)
@@ -1297,31 +1303,22 @@ public partial class MapDropStatistics : BaseSettingsPlugin<MapDropStatisticsSet
         return $"{baseItemType.BaseName} (unidentified)";
     }
 
-    private bool IsT0Unique(string uniqueName)
-    {
-        return _t0UniqueNames.Contains(uniqueName) ||
-               _t0UniqueNames.Any(t0 => uniqueName.Contains(t0, StringComparison.InvariantCultureIgnoreCase));
-    }
+    private bool IsT0Unique(string uniqueName) =>
+        _history?.IsT0Unique(uniqueName) ?? MapHistory.MatchesT0Unique(_initialT0UniqueNames, uniqueName);
 
-    private HashSet<string> LoadT0UniqueNames()
+    private string[] LoadInitialT0UniqueNames()
     {
         var path = ResolveT0UniqueFilePath();
-        if (!File.Exists(path))
+        try
         {
-            EnsureParentDirectoryExists(path);
-            File.WriteAllLines(path,
-            [
-                "# One unique name per line.",
-                "# Add your full T0 list here.",
-                "Mageblood",
-                "Marohi Erqi"
-            ]);
+            if (File.Exists(path))
+                return MapHistory.NormalizeT0UniqueNames(File.ReadAllLines(path));
         }
-
-        return File.ReadAllLines(path)
-            .Select(x => x.Trim())
-            .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith("#", StringComparison.Ordinal))
-            .ToHashSet(StringComparer.InvariantCultureIgnoreCase);
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogError($"Could not import the T0 unique list: {ex.Message}");
+        }
+        return MapHistory.DefaultT0UniqueNames;
     }
 
     private string ResolveT0UniqueFilePath()

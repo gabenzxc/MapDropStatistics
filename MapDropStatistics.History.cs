@@ -69,7 +69,7 @@ public partial class MapDropStatistics
             var beltNames = uniqueTypes.Where(entry => entry.Value == "Belts").Select(entry => entry.Key)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             _history = new MapHistory(Path.Combine(root, "MapHistory"), message => LogError(message), beltNames,
-                IsT0Unique, GetWidgetDefaults(), uniqueTypes, Settings.Tracking.FailUniqueThreshold.Value);
+                GetWidgetDefaults(), uniqueTypes, _initialT0UniqueNames, Settings.Tracking.FailUniqueThreshold.Value);
             Settings.Tracking.FailUniqueThreshold.OnValueChanged += (_, value) => _history.SetFailUniqueThreshold(value);
             _priceArchive = new MarketPriceArchive(Path.Combine(root, "MarketPrices"), GetPricerCacheRoot,
                 message => LogError(message));
@@ -308,13 +308,16 @@ public partial class MapDropStatistics
         _lastBaseMapTime = default;
         _baseMapModifiers = default;
         SetMapSegment(area, _trackingCurrentArea && IsMirageArea(area));
+        var isAdditionalArea = _trackingCurrentArea && !IsAtlasArea(area);
         _activeRun = _trackingCurrentArea && _history != null
             ? new MapRun
             {
                 Name = _currentAreaName, AreaId = area?.Area?.Id,
                 StartedUtc = DateTime.UtcNow, Altars = [], SessionId = _history.ActiveSessionId,
+                AdditionalArea = isAdditionalArea,
                 TracksUniqueBelts = true,
-                Pricing = new MapPricing(_history.DefaultMapPriceDivine, SnapshotWindowHours: MarketPriceArchive.WindowHours)
+                Pricing = new MapPricing(isAdditionalArea ? 0 : _history.DefaultMapPriceDivine,
+                    SnapshotWindowHours: MarketPriceArchive.WindowHours)
             }
             : null;
         _seenAltars.Clear();

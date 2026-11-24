@@ -6,9 +6,10 @@ internal static class MapFailureRules
 {
     public const int DefaultUniqueThreshold = 200;
 
-    public static bool IsFailed(string state, bool? manual, bool wipeObserved, int uniquesDropped, int threshold) =>
+    public static bool IsFailed(string state, bool? manual, bool wipeObserved, int uniquesDropped, int threshold,
+        bool applyUniqueThreshold = true) =>
         manual ?? (wipeObserved ||
-            (state is "recorded" or "interrupted" or "legacy" && uniquesDropped <= threshold));
+            (applyUniqueThreshold && (state is "recorded" or "interrupted" or "legacy") && uniquesDropped <= threshold));
 }
 
 internal sealed partial class MapHistory
@@ -26,7 +27,7 @@ internal sealed partial class MapHistory
             foreach (var (id, map) in _index.ToArray())
             {
                 var failed = MapFailureRules.IsFailed(map.State, map.FailureOverride, map.WipeObserved,
-                    map.UniquesDropped, threshold);
+                    map.UniquesDropped, threshold, applyUniqueThreshold: !map.AdditionalArea);
                 if (map.Failed == failed)
                     continue;
 

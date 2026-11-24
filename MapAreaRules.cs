@@ -28,6 +28,17 @@ internal static class MapAreaRules
 
     public static bool IsAtlasMap(MapRun run) => IsAtlasMap(GetRecordedAreaId(run), run.Name);
 
+    public static bool IsRecordedArea(MapRun run) => run.AdditionalArea || IsAtlasMap(run);
+
+    public static bool MatchesAdditionalArea(string name, string[] names) =>
+        !string.IsNullOrWhiteSpace(name) && names.Contains(NormalizeName(name), StringComparer.OrdinalIgnoreCase);
+
+    public static string[] NormalizeAdditionalAreaNames(IEnumerable<string> names) => names
+        .Select(NormalizeName)
+        .Where(name => !string.IsNullOrEmpty(name))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     public static string AreaIdFromKey(string areaKey)
     {
         var separator = areaKey?.IndexOf('|') ?? -1;

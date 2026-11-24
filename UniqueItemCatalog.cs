@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace MapDropStatistics;
@@ -11,6 +12,8 @@ internal static class UniqueItemCatalog
     private static readonly Dictionary<string, Entry> Reference = LoadReference();
 
     public static Entry Find(string name) => Reference.GetValueOrDefault(name.Replace('’', '\''));
+
+    public static IEnumerable<string> NamesInTier(int tier) => Reference.Where(entry => entry.Value.Tier == tier).Select(entry => entry.Key);
 
     public static string ItemType(string path, string itemClass = null)
     {

@@ -32,12 +32,10 @@
     <EmbeddedResource Include="Dashboard\dashboard.css" LogicalName="Dashboard.dashboard.css" />
     <EmbeddedResource Include="Dashboard\dashboard.js" LogicalName="Dashboard.dashboard.js" />
     <EmbeddedResource Include="Dashboard\comparison.js" LogicalName="Dashboard.comparison.js" />
+    <EmbeddedResource Include="Dashboard\collection.js" LogicalName="Dashboard.collection.js" />
     <EmbeddedResource Include="uniqueDropTiers.json" LogicalName="UniqueDropTiers.json" />
     <EmbeddedResource Include="atlasMapAreas.json" LogicalName="AtlasMapAreas.json" />
-    <Content Include="t0_uniques.txt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
+    <EmbeddedResource Include="t0_uniques.txt" LogicalName="T0Uniques.txt" />
     <Content Include="uniqueArtMapping.default.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
