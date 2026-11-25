@@ -828,7 +828,7 @@ function renderMapList() {
   $("more").hidden = state.filtered.length <= state.visible;
 }
 
-const zoneLabels = { wildwood: "Wildwood", delirium: "Delirium", mirage: "Mirage", beyond: "Beyond" };
+const zoneLabels = { wildwood: "Wildwood", delirium: "Delirium", mirage: "Mirage", beyond: "Beyond", breach: "Breach" };
 
 function createKillBreakdown(kills) {
   const breakdown = element("span", null, "kill-breakdown");
@@ -905,11 +905,14 @@ function renderDetail() {
   const rateUnavailable = minimum?.currency === "chaos" && !(map.chaosDivineRate > 0);
   const minimumDivine = rateUnavailable ? null : minimum?.currency === "chaos" ? minimum.value * map.chaosDivineRate : minimum?.value;
   const kills = map.killBreakdown;
+  const progress = map.encounterProgress;
   const dropBonuses = (map.dropBonuses ?? []).filter(bonus => /^(?:More|Less) /.test(bonus.label) &&
     (bonus.stat || !run.modifiers?.length));
   const mapStats = [
     ["Time", duration(map.seconds)], ["Quantity", `${map.quantity}%`], ["Rarity", `${map.rarity}%`],
     ["Pack size", `${map.packSize}%`],
+    ...(progress?.breachSeen > 0 ? [["Breach", `${number.format(progress.breachClosed ?? 0)}/${number.format(progress.breachSeen)}`,
+      "Successfully closed Breaches out of those found on the map"]] : []),
     ...dropBonuses.map(({ label, percent }) => [label, `${number.format(percent)}%`]),
     ...(map.t0UniquesDropped > 0 ? [["T0 Uniques", number.format(map.t0UniquesDropped), map.lastT0Unique]] : []),
     ...(map.deaths > 0 ? [["Deaths", number.format(map.deaths),

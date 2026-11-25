@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json.Serialization;
 
 namespace MapDropStatistics;
@@ -7,9 +8,13 @@ internal sealed record MapEncounterProgress(int LegionSeen = 0, int LegionClosed
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool WildwoodEntered { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int BreachSeen { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int BreachClosed { get; init; }
 }
 
-internal enum ProgressEncounter { None, Legion, EndlessLegion, Abyss, Mirage, Delirium }
+internal enum ProgressEncounter { None, Legion, EndlessLegion, Abyss, Mirage, Delirium, UnstableBreach, BreachHive }
 
 internal static class EncounterProgressRules
 {
@@ -32,6 +37,11 @@ internal static class EncounterProgressRules
         "Metadata/MiscellaneousObjects/Abyss/AbyssFinalNodeSubArea" => ProgressEncounter.Abyss,
         "Metadata/MiscellaneousObjects/Faridun/DjinnPortal" => ProgressEncounter.Mirage,
         DeliriumMirror => ProgressEncounter.Delirium,
+        _ when string.Equals(metadata, "Metadata/MiscellaneousObjects/Brequel/BrequelInitiator", StringComparison.OrdinalIgnoreCase)
+            => ProgressEncounter.UnstableBreach,
+        _ when string.Equals(metadata, "Metadata/MiscellaneousObjects/Brequel/BrequelStabiliser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(metadata, "Metadata/MiscellaneousObjects/Brequel/BrequelStabiliserFortress", StringComparison.OrdinalIgnoreCase)
+            => ProgressEncounter.BreachHive,
         _ => ProgressEncounter.None
     };
 
@@ -40,6 +50,8 @@ internal static class EncounterProgressRules
         ProgressEncounter.Legion or ProgressEncounter.EndlessLegion => "obelisk_state",
         ProgressEncounter.Mirage => "ready",
         ProgressEncounter.Delirium => "interacted",
+        ProgressEncounter.UnstableBreach => "encounter_state",
+        ProgressEncounter.BreachHive => "bomb_defence",
         _ => null
     };
 
@@ -51,6 +63,10 @@ internal static class EncounterProgressRules
         // Abyss transition 3 closes a failed pit. Transition 4 closes a successful pit.
         ProgressEncounter.Abyss => state == 4,
         ProgressEncounter.Mirage or ProgressEncounter.Delirium => state == 1,
+        // State 3 closes a stabilized breach. State 4 closes a breach before stabilization.
+        ProgressEncounter.UnstableBreach => state == 3,
+        // Hive defense succeeds at state 2 and fails at state 3.
+        ProgressEncounter.BreachHive => state == 2,
         _ => false
     };
 }

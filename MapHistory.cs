@@ -362,6 +362,8 @@ internal sealed record MapSummary(
         if (run.EncounterProgress?.DeliriumStarted == true)
             zones.Add("delirium");
         var encounterProgress = run.EncounterProgress;
+        if (encounterProgress?.BreachSeen > 0)
+            zones.Add("breach");
         if (encounterProgress?.WildwoodEntered != true && run.EncounterSignals.Any(signal => signal is
                 { Source: "Area state", Detail: EncounterProgressRules.WildwoodInsideSignal } or
                 { Source: "Area transition", Detail: EncounterProgressRules.WildwoodAreaId }))

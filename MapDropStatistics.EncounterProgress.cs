@@ -89,6 +89,8 @@ public partial class MapDropStatistics
         var legionClosed = 0;
         var abyssSeen = 0;
         var abyssClosed = 0;
+        var breachSeen = 0;
+        var breachClosed = 0;
         var mirageActivated = _inMirage || _activeRun.EncounterProgress?.MirageActivated == true ||
             _lastRunModifiers.GetValueOrDefault(GameStat.MapMirageChosenWishIndex1ForLogging)?.Value > 0;
         var deliriumStarted = _deliriumRewardStarted ||
@@ -114,6 +116,11 @@ public partial class MapDropStatistics
                     if (encounter.Complete)
                         abyssClosed++;
                     break;
+                case ProgressEncounter.UnstableBreach or ProgressEncounter.BreachHive:
+                    breachSeen++;
+                    if (encounter.Complete)
+                        breachClosed++;
+                    break;
                 case ProgressEncounter.Mirage:
                     mirageActivated |= encounter.Complete;
                     break;
@@ -123,12 +130,14 @@ public partial class MapDropStatistics
             }
         }
 
-        if (legionSeen == 0 && abyssSeen == 0 && !mirageActivated && !deliriumStarted)
+        if (legionSeen == 0 && abyssSeen == 0 && breachSeen == 0 && !mirageActivated && !deliriumStarted)
             return;
 
         var progress = new MapEncounterProgress(legionSeen, legionClosed, abyssSeen, abyssClosed, mirageActivated, deliriumStarted)
         {
-            WildwoodEntered = _activeRun.EncounterProgress?.WildwoodEntered == true
+            WildwoodEntered = _activeRun.EncounterProgress?.WildwoodEntered == true,
+            BreachSeen = breachSeen,
+            BreachClosed = breachClosed
         };
         if (progress != _activeRun.EncounterProgress)
         {

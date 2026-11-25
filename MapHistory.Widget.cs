@@ -28,6 +28,7 @@ internal sealed record WidgetSettings(bool Enabled = true, bool ShowOutsideMaps 
         new("custom", "Custom items"),
         new("legion", "Legion progress"),
         new("abyss", "Abyss progress"),
+        new("breach", "Breach progress"),
         new("wildwood", "Wildwood entry"),
         new("mirage", "Mirage activation"),
         new("delirium", "Delirium activation")
@@ -55,6 +56,7 @@ internal sealed record WidgetRow(string Id, string Label, string Current, string
         "modifiers" => 0xA0B7F8,
         "legion" => 0xD1A7EF,
         "abyss" => 0x90D9AB,
+        "breach" => 0xEEA7D9,
         "wildwood" => 0xAECF79,
         "mirage" => 0xE8C183,
         "delirium" => 0xB3C7D7,
@@ -234,6 +236,11 @@ internal sealed partial class MapHistory
         {
             var abyss = new WidgetProgress(progress.AbyssClosed, progress.AbyssSeen);
             rows.Add(new WidgetRow("abyss", "Abyss", abyss.Text, Progress: abyss));
+        }
+        if (progress?.BreachSeen > 0)
+        {
+            var breach = new WidgetProgress(progress.BreachClosed, progress.BreachSeen);
+            rows.Add(new WidgetRow("breach", "Breach", breach.Text, Progress: breach));
         }
         if (map.Zones.Contains("wildwood"))
             rows.Add(new WidgetRow("wildwood", "Wildwood", progress?.WildwoodEntered == true ? "Entered" : "Not entered"));
