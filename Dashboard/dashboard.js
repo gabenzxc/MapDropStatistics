@@ -230,6 +230,11 @@ function selectedHistorySession() {
   return state.sessions?.sessions.find(session => session.id === id);
 }
 
+function lastPausedMap() {
+  const map = mapsInSession().find(map => ["active", "paused"].includes(map.state));
+  return map?.state === "paused" && includedInStatistics(map) ? map : null;
+}
+
 function renderSessionControls() {
   const select = $("session-view");
   const current = state.sessions.sessions.find(session => session.id === state.sessions.activeId);
@@ -242,6 +247,9 @@ function renderSessionControls() {
     select.replaceChildren(...options.map(([label, value]) => new Option(label, value)));
   if (!options.some(option => option[1] === state.sessionView)) state.sessionView = "active";
   select.value = state.sessionView;
+  const paused = lastPausedMap();
+  $("record-last-map").hidden = !paused;
+  $("record-last-map").title = paused ? `Add ${paused.name} to the statistics now` : "";
   $("open-rename-session").hidden = !selectedHistorySession();
   $("open-delete-session").hidden = $("open-rename-session").hidden;
   $("resume-session").hidden = !archive.some(session => session.id === state.sessionView);
@@ -912,7 +920,7 @@ function renderDetail() {
     ["Time", duration(map.seconds)], ["Quantity", `${map.quantity}%`], ["Rarity", `${map.rarity}%`],
     ["Pack size", `${map.packSize}%`],
     ...(progress?.breachSeen > 0 ? [["Breach", `${number.format(progress.breachClosed ?? 0)}/${number.format(progress.breachSeen)}`,
-      "Successfully closed Breaches out of those found on the map"]] : []),
+      "Closed Breaches out of those found on the map"]] : []),
     ...dropBonuses.map(({ label, percent }) => [label, `${number.format(percent)}%`]),
     ...(map.t0UniquesDropped > 0 ? [["T0 Uniques", number.format(map.t0UniquesDropped), map.lastT0Unique]] : []),
     ...(map.deaths > 0 ? [["Deaths", number.format(map.deaths),
@@ -2037,6 +2045,24 @@ $("session-view").addEventListener("change", event => {
   state.visible = 25;
   set("session-control-status", "");
   refresh(true);
+});
+
+$("record-last-map").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  const map = lastPausedMap();
+  if (!map || button.disabled) return;
+  button.disabled = true;
+  set("session-control-status", "");
+  try {
+    await request(`/api/maps/${map.id}/record`, true);
+    await refresh(true);
+    set("session-control-status", `${map.name} added to statistics.`);
+  } catch (error) {
+    if (error.message === "409") await refresh(true);
+    set("session-control-status", error.message === "409" ? "This map is no longer available to record." : "Could not record the last map.");
+  } finally {
+    button.disabled = false;
+  }
 });
 
 for (const [id, event] of [["session-ground-search", "input"], ["session-ground-category", "change"]]) {

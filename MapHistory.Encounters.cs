@@ -63,8 +63,8 @@ internal static class EncounterProgressRules
         // Abyss transition 3 closes a failed pit. Transition 4 closes a successful pit.
         ProgressEncounter.Abyss => state == 4,
         ProgressEncounter.Mirage or ProgressEncounter.Delirium => state == 1,
-        // State 3 closes a stabilized breach. State 4 closes a breach before stabilization.
-        ProgressEncounter.UnstableBreach => state == 3,
+        // Both terminal states close the rift. They differ in whether it stabilized first.
+        ProgressEncounter.UnstableBreach => state is 3 or 4,
         // Hive defense succeeds at state 2 and fails at state 3.
         ProgressEncounter.BreachHive => state == 2,
         _ => false

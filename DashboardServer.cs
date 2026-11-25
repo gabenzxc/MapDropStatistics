@@ -428,6 +428,11 @@ internal sealed class DashboardServer : IDisposable
             response.StatusCode = _history.EditFavorite(mapId, favorite) ? 204 : 404;
             return;
         }
+        if (parts.Length == 4 && parts[3] == "record")
+        {
+            response.StatusCode = _history.RecordPausedMap(mapId) ? 204 : 409;
+            return;
+        }
         if (parts.Length == 4 && parts[3] == "delete")
         {
             var confirmed = await JsonSerializer.DeserializeAsync<bool>(request.InputStream, MapHistory.Json).ConfigureAwait(false);

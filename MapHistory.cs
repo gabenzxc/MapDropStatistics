@@ -24,6 +24,8 @@ internal sealed class MapRun
     public DateTime UpdatedUtc { get; set; }
     public double? Seconds { get; set; }
     public string State { get; set; } = "active";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RecordOnPause { get; set; }
     public bool WipeObserved { get; set; }
     public int Deaths { get; set; }
     public int PartyDeaths { get; set; }
@@ -686,10 +688,11 @@ internal sealed partial class MapHistory
         };
     }
 
-    private sealed record LiveMapEdits(Dictionary<Guid, LootEdit> Loot, bool? Failed, bool Excluded, double? Price, bool Favorite)
+    private sealed record LiveMapEdits(Dictionary<Guid, LootEdit> Loot, bool? Failed, bool Excluded, double? Price, bool Favorite,
+        bool RecordOnPause)
     {
         public static LiveMapEdits FromRun(MapRun run) => new(run.Edits, run.FailureOverride, run.ExcludedFromStatistics,
-            run.MapPriceDivine, run.Favorite);
+            run.MapPriceDivine, run.Favorite, run.RecordOnPause);
     }
 
     public Guid StartNewSession()
@@ -878,6 +881,27 @@ internal sealed partial class MapHistory
         run.FailureOverride = failed;
         return true;
     });
+
+    public bool RecordPausedMap(Guid id)
+    {
+        lock (_gate)
+        {
+            if (!_index.TryGetValue(id, out var current) || current.ExcludedFromStatistics)
+                return false;
+            if (current.State == "recorded")
+                return true;
+            if (current.State != "paused" || !Edit(id, run =>
+                {
+                    run.State = "recorded";
+                    run.RecordOnPause = true;
+                    return true;
+                }))
+                return false;
+            if (_widgetContext != null)
+                PublishWidget(_widgetContext);
+            return true;
+        }
+    }
 
     public bool EditFavorite(Guid id, bool favorite) => Edit(id, run =>
     {
@@ -1084,8 +1108,21 @@ internal sealed partial class MapHistory
                 run.ExcludedFromStatistics = edits.Excluded;
                 run.MapPriceDivine = edits.Price;
                 run.Favorite = edits.Favorite;
+                run.RecordOnPause = edits.RecordOnPause;
             }
-            Save(run);
+
+            // Publish a counted checkpoint while leaving the live run paused and able to resume.
+            var liveState = run.State;
+            if (liveState == "paused" && run.RecordOnPause)
+                run.State = "recorded";
+            try
+            {
+                Save(run);
+            }
+            finally
+            {
+                run.State = liveState;
+            }
         }
     }
 
